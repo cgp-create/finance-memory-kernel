@@ -1,4 +1,4 @@
-"""Canonical tests 10 and 12 over the ten JSONL fixtures.
+"""Tests 10 and 12 over the ten JSONL fixtures.
 
 Every fixture replays through the public functions, every 'expect' line holds,
 and every fixture that claims a failure state actually has one refused op
@@ -36,7 +36,7 @@ FIXTURES_WITH_WARNING_STATE = {"stale_price_conflict", "weekend_mixed_marks", "p
 
 
 def test_all_ten_fixtures_exist():
-    present = {p.stem for p in (ROOT / "fixtures").glob("*.jsonl")}
+    present = {p.stem for p in fixtures.FIXTURE_DIR.glob("*.jsonl")}
     assert present == set(FIXTURE_NAMES)
 
 
@@ -70,6 +70,16 @@ def test_health_check_receipts_for_fixtures():
     assert len(s.query("receipt", "kind='health_check'")) == len(FIXTURE_NAMES)
 
 
+def test_a_wrong_expectation_is_recorded_as_a_failed_health_check():
+    run = fixtures.load("correction_supersession")
+    wrong = fixtures._check(run, {"check": "claim_status", "claim": "$c_inf", "is": "active"})
+    assert wrong, "a false expectation must fail"
+    s = Store(":memory:")
+    rid = receipts.health_check(s, "correction_supersession", fixtures.fixture_hash("correction_supersession"),
+                                passed=not wrong)
+    assert receipts.get_receipt(s, rid).payload["passed"] is False
+
+
 # Test 10: public-safety fixture.
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _PHONE = re.compile(r"\+?\d{1,3}[ -]?\(?\d{3}\)?[ -]?\d{3}[ -]?\d{4}")
@@ -86,7 +96,7 @@ _ALLOWED_KEYS = re.compile(r"^(ACME|SUBJ_[A-Z0-9]+|EQ_\d+|CX_\d+)$")
 
 def _texts():
     me = Path(__file__).resolve()
-    for p in list((ROOT / "fixtures").glob("*.jsonl")) + list((ROOT / "examples").glob("*.py")) \
+    for p in list(fixtures.FIXTURE_DIR.glob("*.jsonl")) + list((ROOT / "examples").glob("*.py")) \
             + list((ROOT / "tests").glob("*.py")):
         if p.resolve() == me:
             continue  # this file holds the patterns it scans for
@@ -106,7 +116,7 @@ def test_public_safety_no_personal_data_credentials_or_real_tickers():
 
 
 def test_fixture_subjects_and_scopes_are_synthetic():
-    for p in (ROOT / "fixtures").glob("*.jsonl"):
+    for p in fixtures.FIXTURE_DIR.glob("*.jsonl"):
         for raw in p.read_text(encoding="utf-8").splitlines():
             raw = raw.strip()
             if not raw or raw.startswith("#"):

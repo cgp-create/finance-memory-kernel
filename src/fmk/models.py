@@ -1,12 +1,11 @@
 """Types, enums, errors and small helpers shared by every fmk module.
 
-What this module does: defines the vocabulary of the kernel (the fifteen
-record types, their enums, the ordering of authority tiers and position
-source classes), the two exception classes, and helpers for ids, UTC
-timestamps and content hashing.
-
-What this module does not do: it holds no persistence and no business
-rules. Constraints live in store.py (schema) and in the domain modules.
+Defines the record types and their enums, the ordering of evidence
+authority tiers and position source classes, the actor kinds that may
+appear in an authority reference, the two exception classes, and helpers
+for ids, UTC timestamps and content hashing. No persistence and no rules
+live here; constraints are in store.py (schema and triggers) and in the
+domain modules.
 """
 from __future__ import annotations
 
@@ -27,11 +26,11 @@ class KernelError(Exception):
 
 
 class InvariantViolation(KernelError):
-    """Raised when an operation would break one of invariants 1 to 17."""
+    """Raised when an operation would break one of the numbered invariants in SPEC.md."""
 
 
 # --------------------------------------------------------------------------
-# enums (kept as tuples and dicts; names may change, separations must not)
+# enums
 # --------------------------------------------------------------------------
 
 AUTHORITY_RANK: dict[str, int] = {
@@ -47,6 +46,15 @@ AUTHORITY_TIERS = tuple(AUTHORITY_RANK)
 CLAIM_KINDS = ("fact", "forecast", "hypothesis", "inference", "correction", "user_decision")
 CLAIM_STATUSES = ("active", "stale", "superseded", "contradicted", "retracted", "unresolved")
 CLAIM_RELATIONS = ("supports", "contradicts", "supersedes", "depends_on")
+# A claim no longer counts as current once it is in one of these states.
+NOT_CURRENT_CLAIM_STATUSES = frozenset({"superseded", "retracted", "contradicted"})
+
+# Actor kinds for authority references of the form "<kind>:<name>".
+# Humans may review, select, approve and activate. Machines may propose,
+# record executions and reconciliations, and run checks. The kernel checks
+# the declared kind; it does not authenticate the name (see Store.authorize).
+ACTOR_KINDS = ("direct_user", "reviewer", "model", "system", "venue")
+HUMAN_ACTOR_KINDS = frozenset({"direct_user", "reviewer"})
 CASE_SET_STATUSES = ("draft", "reviewed", "selected", "retired")
 TRIGGER_STATES = ("green", "amber", "red", "tripped", "suppressed")
 RETURN_BASES = ("price_only", "total_return")
@@ -80,7 +88,9 @@ INTENT_RUNGS = ("quick_take", "ticker_brief", "portfolio_fit", "deep_dive", "for
 DECISION_STATUS_ORDER = ("proposed", "approved", "executed")
 TERMINAL_DECISION_STATUSES = frozenset({"rejected", "expired", "superseded"})
 DECISION_STATUSES = DECISION_STATUS_ORDER + tuple(sorted(TERMINAL_DECISION_STATUSES))
-SNAPSHOT_FRESHNESS = ("fresh", "stale", "mixed")
+SNAPSHOT_FRESHNESS = ("fresh", "stale", "mixed", "none")
+# Decision kinds that change exposure and so can be executed.
+EXECUTABLE_DECISION_KINDS = frozenset({"trade", "rebalance", "close"})
 
 # --------------------------------------------------------------------------
 # helpers
@@ -211,6 +221,7 @@ class Claim(Record):
     valid_to: Optional[str]
     created_at: str
     expires_at: Optional[str]
+    recorded_at: str = ""
 
 
 @dataclass
@@ -239,6 +250,7 @@ class ResearchQuestion(Record):
     answer_claim_ids: list
     created_at: str
     updated_at: str
+    recorded_at: str = ""
 
 
 @dataclass
@@ -257,7 +269,8 @@ class CaseSetRevision(Record):
     retired_at: Optional[str] = None
     review_receipt_id: Optional[str] = None
     selection_receipt_id: Optional[str] = None
-    proposed_by: str = "human"
+    proposed_by: str = "direct_user:owner"
+    recorded_at: str = ""
 
 
 @dataclass
@@ -298,6 +311,7 @@ class Invalidation(Record):
     evidence_ids: list
     created_at: str
     evaluated_at: Optional[str]
+    recorded_at: str = ""
 
 
 @dataclass
@@ -315,28 +329,6 @@ class Trigger(Record):
     priority: int
     status: str
     last_evaluated_at: Optional[str]
-
-
-@dataclass
-class Synthesis(Record):
-    _table: ClassVar[str] = "synthesis"
-    _json_fields: ClassVar[tuple[str, ...]] = (
-        "claim_ids",
-        "evidence_ids",
-        "open_question_ids",
-        "warning_ids",
-    )
-    id: str
-    subject_id: str
-    as_of: str
-    policy_version: str
-    claim_ids: list
-    evidence_ids: list
-    selected_revision_id: Optional[str]
-    summary: str
-    open_question_ids: list
-    warning_ids: list
-    content_hash: str
 
 
 @dataclass
@@ -363,6 +355,7 @@ class ContextPacket(Record):
     runtime: dict
     packet_hash: str
     created_at: str
+    known_as_of: Optional[str] = None
 
 
 @dataclass
@@ -377,6 +370,8 @@ class Receipt(Record):
     payload: dict
     payload_hash: str
     prior_receipt_id: Optional[str]
+    prev_chain_hash: str = ""
+    chain_hash: str = ""
 
 
 # ---- decision layer -------------------------------------------------------
@@ -398,9 +393,13 @@ class MandateBody:
     min_cash_pct: float = 0.0
     per_trade_notional_cap: Optional[float] = None
     daily_notional_cap: Optional[float] = None
-    requires_approval: str = "always"  # always | above_notional | never
-    approval_notional_threshold: Optional[float] = None
     funding_rule_text: str = ""
+    # restraint: a trade must clear this edge after its estimated costs
+    min_net_edge_bps: Optional[float] = None
+    # execution: slippage beyond this against the expected price is flagged
+    max_slippage_bps: Optional[float] = None
+    # an approval lapses if it is not executed within this many seconds
+    approval_ttl_seconds: Optional[int] = 86400
     # freshness policy in seconds by snapshot source class; 0 means never fresh
     freshness_seconds: dict = field(
         default_factory=lambda: {
@@ -433,7 +432,6 @@ class Mandate(Record):
 @dataclass
 class PositionSnapshot(Record):
     _table: ClassVar[str] = "position_snapshot"
-    _json_fields: ClassVar[tuple[str, ...]] = ("pending_order_refs",)
     id: str
     scope_ref: str
     subject_id: str
@@ -441,12 +439,10 @@ class PositionSnapshot(Record):
     source_class: str
     source_ref: Optional[str]
     quantity: Optional[float]
-    cost_basis: Optional[float]
     mark_price: Optional[float]
     mark_as_of: Optional[str]
     mark_source_class: Optional[str]
     cash_available: Optional[float]
-    pending_order_refs: list
     content_hash: str
     ingested_at: str
 
@@ -483,6 +479,7 @@ class DecisionRecord(Record):
     execution_receipt_id: Optional[str] = None
     reconcile_receipt_id: Optional[str] = None
     superseded_by_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 REF_PREFIX_TO_TABLE: dict[str, str] = {
@@ -495,7 +492,6 @@ REF_PREFIX_TO_TABLE: dict[str, str] = {
     "case": "research_case",
     "invalidation": "invalidation",
     "trigger": "research_trigger",
-    "synthesis": "synthesis",
     "packet": "context_packet",
     "receipt": "receipt",
     "mandate": "mandate",
@@ -513,7 +509,6 @@ TABLE_TO_CLASS: dict[str, type] = {
     "research_case": Case,
     "invalidation": Invalidation,
     "research_trigger": Trigger,
-    "synthesis": Synthesis,
     "context_packet": ContextPacket,
     "receipt": Receipt,
     "mandate": Mandate,

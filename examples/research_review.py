@@ -1,14 +1,11 @@
 """Research review on frozen fixture data.
 
-What this script does: replays the stale_price_conflict fixture, builds a
-context packet for a factual question, prints the rank explanations and
-warnings, shows that building the packet twice gives the same hash, and
-shows what a model is permitted to do with the packet (draft a proposal)
-and what it is not (select it).
-
-What this script does not do: it does not resolve the contradiction in the
-fixture. Two credible claims disagree on unit economics; the packet shows
-both and says so. No network, no real data.
+Replays the stale_price_conflict fixture, builds a context packet for a
+factual question, prints rank explanations and warnings, shows that a
+rebuild gives the same hash, and shows what a model may do with the
+packet (draft a proposal) and what it may not (review or select it, even
+after a human has reviewed it). The contradiction in the fixture is left
+unresolved: both claims are shown and the packet says so.
 
 Run: python examples/research_review.py
 """
@@ -54,11 +51,16 @@ def main() -> None:
         {"label": "base", "probability": 1.0, "return_basis": "price_only", "assumptions": ["margin question open"]},
     ])
     print(f"  draft {draft} status {underwriting.get_revision(store, draft).status}")
-    print("what it may not do: select it")
+    print("what it may not do: review it, or select it once a human has")
+    try:
+        underwriting.review_revision(store, draft, "model:assistant")
+    except InvariantViolation as e:
+        print(f"  review refused: {e}")
+    underwriting.review_revision(store, draft, "reviewer:synthetic_pm")
     try:
         underwriting.select_revision(store, draft, "model:assistant")
     except InvariantViolation as e:
-        print(f"  refused: {e}")
+        print(f"  selection refused: {e}")
     print(f"\nselected revision for ACME 12m: {underwriting.selected_revision(store, acme, '12m')}")
 
 

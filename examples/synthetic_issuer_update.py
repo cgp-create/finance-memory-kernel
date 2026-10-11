@@ -1,15 +1,15 @@
-"""Section 6.1 lifecycle end to end, on synthetic data.
+"""SPEC section 6.1 end to end, on synthetic data.
 
-What this script does: walks one synthetic issuer event through the kernel
-in order: evidence, claims and supersession, an open question, a draft
-successor revision with its diff, review and a selection receipt, a
-context packet with its runtime block, a decision checked against an
-active mandate, approval, execution, reconciliation, and the receipt
-chain that proves each step. It prints the chain as it goes.
+One synthetic issuer event, in order: evidence; claims, supersession and a
+dependent claim going stale; an open question; a model-drafted successor
+revision with its diff; a model's attempt to select it (refused); human
+review and selection; a context packet; a decision checked by the kernel
+against the active mandate; approval, execution with slippage, and
+reconciliation; and the receipt chain verified at the end.
 
-What this script does not do: it uses no network, no real issuer, no real
-ticker and no account. Every number is made up. It does not size the
-trade; the notional is a literal in this file.
+No network, no real issuer, ticker or account. Every number is made up,
+including the notional, which this script picks rather than sizes. The
+clock is fixed so the output is the same on every run.
 
 Run: python examples/synthetic_issuer_update.py
 """
@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fmk import claims, decisions, evidence, receipts, retrieval, underwriting  # noqa: E402
+from fmk.fixtures import fixed_clock  # noqa: E402
 from fmk.models import InvariantViolation, MandateBody  # noqa: E402
 from fmk.store import Store  # noqa: E402
 
@@ -33,7 +34,7 @@ def step(n: int, title: str) -> None:
 
 
 def main() -> None:
-    store = Store(":memory:")
+    store = Store(":memory:", clock=fixed_clock("2026-07-16T09:00:00Z"), deterministic_ids=True)
     acme = evidence.add_subject(store, "ACME", "Synthetic issuer ACME", "issuer")
 
     step(1, "Prior state: initial guidance as primary evidence, claims, a selected revision")
@@ -46,6 +47,11 @@ def main() -> None:
     c_margin_old = claims.add_claim(store, acme, ev_prior, "guidance.op_margin", "fact",
                                     "Operating margin guidance 18 to 19 percent", value={"low": 18, "high": 19},
                                     confidence=0.9, created_at="2026-07-15T12:05:00Z")
+    c_ev_ebit = claims.add_claim(store, acme, ev_prior, "valuation.fy_ebit", "inference",
+                                 "FY EBIT about 190 at the guidance midpoints", value=190, confidence=0.7,
+                                 source_strength="assistant_inference", created_at="2026-07-15T12:06:00Z")
+    claims.add_dependency(store, c_ev_ebit, c_guide_old)
+    claims.add_dependency(store, c_ev_ebit, c_margin_old)
     rev1 = underwriting.draft_revision(store, acme, "12m", "Base case: guidance met, multiple holds", [
         {"label": "bull", "probability": 0.3, "return_basis": "price_only", "assumptions": ["revenue at top of guide"],
          "evidence_for_ids": [ev_prior], "price_target": 60, "expected_return_pct": 25,
@@ -64,6 +70,7 @@ def main() -> None:
     print(f"  evidence {ev_prior}; claims {c_guide_old}, {c_margin_old}")
     print(f"  revision {rev1} selected; selection receipt {sel1}")
 
+    store.clock = fixed_clock("2026-10-01T12:00:00Z")
     step(2, "Source arrives: the issuer cuts guidance. Stored as immutable primary evidence")
     ev_cut = evidence.add_evidence(store, acme, "ir_release", "synthetic://ACME/fy-outlook-revised",
                                    "2026-10-01T12:00:00Z", "primary",
@@ -86,9 +93,11 @@ def main() -> None:
     c_infer = claims.add_claim(store, acme, ev_cut, "thesis.bull_case", "inference",
                                "Bull case needs reassessment after the guidance cut", confidence=0.6,
                                source_strength="assistant_inference", created_at="2026-10-01T12:15:00Z")
-    for cid in (c_guide_old, c_guide_new, c_margin_old, c_infer):
+    for cid in (c_guide_old, c_guide_new, c_margin_old, c_infer, c_ev_ebit):
         c = claims.get_claim(store, cid)
         print(f"  claim {cid} [{c.aspect}] {c.status}, expires {c.expires_at}")
+    print(f"  the EBIT estimate rested on the old guidance; it is now "
+          f"{claims.get_claim(store, c_ev_ebit).status} until someone refreshes it")
     underwriting.link_evidence_against(store, inv_bull, ev_cut)
     print(f"  evidence linked against invalidation {inv_bull}; selected revision probabilities unchanged")
 
@@ -109,18 +118,22 @@ def main() -> None:
         {"label": "bear", "probability": 0.35, "return_basis": "total_return", "assumptions": ["demand-led, further cuts"],
          "evidence_for_ids": [ev_cut], "price_target": 34, "expected_return_pct": -29,
          "return_anchor_at": "2026-10-01T12:00:00Z"},
-    ], parent_id=rev1, proposed_by="model", created_at="2026-10-02T09:00:00Z")
+    ], parent_id=rev1, proposed_by="model:assistant", created_at="2026-10-02T09:00:00Z")
     diff = underwriting.diff_revisions(store, rev1, rev2)
     for ch in diff["changed"]:
         print(f"  {ch['label']}: " + ", ".join(f"{k} {v['from']} -> {v['to']}" for k, v in ch.items() if k != "label"))
     try:
+        underwriting.review_revision(store, rev2, "model:assistant", "looks good to me")
+    except InvariantViolation as e:
+        print(f"  model tried to review its own draft: refused ({e})")
+
+    step(6, "Human review; the model then tries to select the reviewed draft; a human selects it")
+    underwriting.review_revision(store, rev2, "reviewer:synthetic_pm", "diff reviewed against rev1")
+    try:
         underwriting.select_revision(store, rev2, "model:assistant")
     except InvariantViolation as e:
-        print(f"  model tried to select its own draft: refused ({e})")
+        print(f"  model tried to select the reviewed draft: refused ({e})")
     print(f"  selected revision is still {underwriting.selected_revision(store, acme, '12m').id}")
-
-    step(6, "Human review and selection; receipt names the authority and the reviewed revision")
-    underwriting.review_revision(store, rev2, "reviewer:synthetic_pm", "diff reviewed against rev1")
     sel2 = underwriting.select_revision(store, rev2, "direct_user:owner")
     r = receipts.get_receipt(store, sel2)
     print(f"  selection receipt {sel2}: {r.authority_ref} selected {r.object_ref}, replaces {r.payload['replaces']}")
@@ -136,39 +149,53 @@ def main() -> None:
     print(f"  warnings: {pkt.warnings or 'none'}")
     print(f"  packet {pkt.id} hash {pkt.packet_hash[:16]} runtime {pkt.runtime['model_id']} fallback {pkt.runtime['fallback_used']}")
 
-    step(8, "Decision: mandate, position snapshot, proposal, mandate check")
+    store.clock = fixed_clock("2026-10-05T09:05:00Z")
+    step(8, "Decision: mandate, position snapshot, proposal; the kernel computes the mandate check")
     mid = decisions.propose_mandate(store, "scope_demo", MandateBody(
         objective_text="growth sleeve", horizon="12m", allowed_asset_classes=["equity"], allowed_venues=["venue_a"],
-        max_position_pct=10.0, max_subject_exposure_pct=15.0, per_trade_notional_cap=50_000))
+        max_position_pct=10.0, max_subject_exposure_pct=15.0, per_trade_notional_cap=50_000,
+        max_slippage_bps=30))
     act = decisions.activate_mandate(store, mid, "direct_user:owner")
     m = decisions.active_mandate(store, "scope_demo")
     snap = decisions.add_snapshot(store, "scope_demo", acme, "2026-10-05T09:00:00Z", "broker_position",
                                   quantity=100, mark_price=46.0, mark_as_of="2026-10-05T08:59:00Z")
-    pos = decisions.current_position(store, "scope_demo", acme, now="2026-10-05T09:05:00Z", mandate=m)
-    proposal = {"direction": "sell", "notional": 2300, "quantity": 50, "venue": "venue_a"}
-    chk = decisions.check_against_mandate(proposal, m, nav=100_000, venue="venue_a", asset_class="equity", subject_id=acme)
+    pos = decisions.current_position(store, "scope_demo", acme, mandate=m)
+    proposal = {"direction": "sell", "notional": 2300, "quantity": 50, "venue": "venue_a", "expected_price": 46.0}
     did = decisions.propose_decision(store, "scope_demo", "trade", "action", proposal,
                                      "trim half the position after the guidance cut; bear probability now 35 percent",
-                                     chk, subject_id=acme, evidence_ids=[ev_cut], selected_revision_id=rev2,
-                                     position_snapshot_ids=[snap], snapshot_freshness=decisions.snapshot_freshness([pos]))
+                                     proposed_by="model:assistant", subject_id=acme, nav=100_000,
+                                     asset_class="equity", evidence_ids=[ev_cut], selected_revision_id=rev2,
+                                     position_snapshot_ids=[snap])
+    d = decisions.get_decision(store, did)
     print(f"  mandate {mid} v{m.version} active by receipt {act}")
     print(f"  position {pos['status']} qty {pos['quantity']} from {pos['source_class']}; warnings {pos['warnings'] or 'none'}")
-    print(f"  decision {did} status proposed; mandate_check {chk['status']} against mandate v{chk['mandate_version']}")
+    print(f"  decision {did} proposed by {d.proposed_by}; snapshots {d.snapshot_freshness}; "
+          f"kernel check {d.mandate_check['status']} against mandate v{d.mandate_check['mandate_version']}; "
+          f"not checked: {d.mandate_check['not_checked'] or 'nothing set'}")
     try:
-        decisions.record_execution(store, did, "venue_a", {"qty": 50, "px": 46.1})
+        decisions.record_execution(store, did, "venue:venue_a", {"qty": 50, "px": 46.1})
     except InvariantViolation as e:
         print(f"  execution before approval refused: {e}")
+    try:
+        decisions.approve_decision(store, did, "model:assistant")
+    except InvariantViolation as e:
+        print(f"  the model approving its own proposal: refused ({e})")
 
     step(9, "Approval, execution and reconcile: three separate receipts")
     appr = decisions.approve_decision(store, did, "direct_user:owner")
-    exe = decisions.record_execution(store, did, "venue_a", {"qty": 50, "px": 46.1, "fill_ref": "synthetic://venue_a/fill/1"})
+    exe = decisions.record_execution(store, did, "venue:venue_a",
+                                     {"qty": 50, "px": 45.9, "fill_ref": "synthetic://venue_a/fill/1"})
+    fill = receipts.get_receipt(store, exe).payload
     snap2 = decisions.add_snapshot(store, "scope_demo", acme, "2026-10-05T09:30:00Z", "reconciled",
-                                   quantity=50, mark_price=46.1, mark_as_of="2026-10-05T09:30:00Z",
+                                   quantity=50, mark_price=45.9, mark_as_of="2026-10-05T09:30:00Z",
                                    source_ref="synthetic://venue_a/fill/1")
     rec = decisions.reconcile(store, did, "system:reconciler", snap2)
     d = decisions.get_decision(store, did)
     print(f"  decision status {d.status}; approval {appr}; execution {exe}; reconcile {rec}")
-    pos2 = decisions.current_position(store, "scope_demo", acme, now="2026-10-05T09:35:00Z", mandate=m)
+    print(f"  fill 45.9 against expected 46.0 on a sell: slippage {fill['slippage_bps']} bps "
+          f"(limit 30, breach {fill['slippage_breach']})")
+    store.clock = fixed_clock("2026-10-05T09:35:00Z")
+    pos2 = decisions.current_position(store, "scope_demo", acme, mandate=m)
     print(f"  position now qty {pos2['quantity']} from {pos2['source_class']}")
 
     step(10, "The chain, from receipts alone")
@@ -176,6 +203,8 @@ def main() -> None:
     print(f"  decision:{did} -> {receipts.status_of(store, f'decision:{did}')}")
     for link in decisions.decision_chain(store, did):
         print(f"  {link['at']} {link['kind']:<10} by {link['authority']} ({link['id']})")
+    head = receipts.chain_head(store)
+    print(f"  receipt chain head {head[:16]}; verify_chain problems: {receipts.verify_chain(store, head) or 'none'}")
     print("\nDone. Nothing in this run touched a real market, issuer, account or model.")
 
 

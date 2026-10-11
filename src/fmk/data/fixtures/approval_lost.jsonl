@@ -5,6 +5,6 @@
 {"op":"evidence","as":"ev_chat","subject_id":"$a","source_kind":"conversation","source_ref":"synthetic://conversation/turn-42","observed_at":"2026-10-09T11:00:00Z","authority_tier":"direct_user","payload":{"text":"yes go ahead"}}
 {"op":"decision","as":"d1","scope_ref":"scope_demo","subject_id":"$a","decision_kind":"trade","intent_rung":"action","proposal":{"direction":"buy","notional":5000,"venue":"venue_a"},"rationale_text":"adds to base position after guidance confirmation","nav":100000,"venue":"venue_a","asset_class":"equity","evidence_ids":["$ev_chat"]}
 # Failure state: execution without an approval receipt is refused.
-{"op":"execute","decision_id":"$d1","authority_ref":"venue_a","fill":{"qty":100,"px":50},"expect_error":true}
+{"op":"execute","decision_id":"$d1","authority_ref":"venue:venue_a","fill":{"qty":100,"px":50},"expect_error":true}
 {"op":"expect","check":"decision_status","decision":"$d1","is":"proposed"}
 {"op":"expect","check":"decision_has_no_approval","decision":"$d1"}

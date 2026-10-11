@@ -1,14 +1,10 @@
-"""Subjects and evidence: append and content hashing.
+"""Subjects and evidence: append-only, content-hashed.
 
-What this module does: creates Subjects and appends Evidence records with
-an observed time, an authority tier and a sha256 content hash over the
-payload. A correction is a new Evidence row that points at the one it
-corrects via supersedes_evidence_id; the old row stays as it was
-(invariant 2).
-
-What this module does not do: it does not interpret evidence. Nothing here
-produces a claim, a probability or a target. It also does not fetch
-anything; the caller hands it what a source said.
+Evidence is what a source said, with when it was observed, when the store
+ingested it, an authority tier, and a sha256 over the payload. A
+correction is a new Evidence row pointing at the one it corrects through
+supersedes_evidence_id; the old row is never edited (invariant 2).
+Nothing here interprets evidence or fetches anything.
 """
 from __future__ import annotations
 
@@ -21,7 +17,6 @@ from .models import (
     KernelError,
     Subject,
     content_hash,
-    new_id,
     norm_ts,
 )
 from .store import Store

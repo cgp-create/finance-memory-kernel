@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "finance-memory-kernel"
-version = "0.1.0"
+version = "0.2.0"
 description = "Provenance-preserving, revision-aware research-and-decision record for investment agents. SQLite and the standard library only."
 readme = "README.md"
+authors = [{name = "Carlos Pereira"}]
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = []
@@ -16,6 +17,9 @@ test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+fmk = ["data/fixtures/*.jsonl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

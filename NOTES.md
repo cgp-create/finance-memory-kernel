@@ -1,47 +1,53 @@
-# Implementation notes
+# Design decisions
 
-Ambiguities in the two source specifications and how this implementation resolved them. Each is a judgement call; none changes an invariant.
+Judgement calls made while building this, and the reasons for them. None of them changes an invariant in SPEC.md section 5.
 
-1. **Selection replacing a selected revision.** The canonical spec says at most one selected revision per subject and horizon, but not whether selecting a successor retires the predecessor or fails. `select_revision` retires the current one by default (`retire_current=True`) inside the same transaction; with `retire_current=False` it fails on the partial unique index. The duplicate_case_set fixture exercises the failing path, the issuer_guidance_cut fixture the replacing path.
+1. **Selecting a successor retires the predecessor.** `select_revision` retires the current selection in the same transaction by default. With `retire_current=False` it fails on the partial unique index instead. The `duplicate_case_set` fixture uses the failing path and `issuer_guidance_cut` the replacing one.
 
-2. **Review before selection.** The canonical spec's invariant 5 says the selection receipt names "the reviewed revision". This is read as a requirement: a revision must be in status `reviewed` (with a review receipt) before it can be selected. A draft cannot be selected directly.
+2. **Review before selection.** A revision must be `reviewed`, with a human review receipt, before it can be selected. The schema refuses `draft -> selected`.
 
-3. **Who may select.** The spec says "human or authorized review". `authority_ref` strings beginning with `model`, `retrieval` or `assistant` are refused for selection and for contradiction resolution. Everything else is accepted; the kernel does not maintain an authority registry.
+3. **Actor kinds instead of an identity registry.** Authorities are `<kind>:<name>`. The kernel enforces rules by kind (models never review, select, approve or activate; only `direct_user` activates a mandate; executions come from a venue or system) and two separation rules by name (a reviewer is not the draft's author; an approver is not the decision's proposer). It does not authenticate names, because that depends on the application; `Store(authorize=...)` is the hook for it. Names are compared ignoring case and kind, so `direct_user:owner` and `reviewer:Owner` are one person. A solo investor who types a trade proposal themselves therefore needs a second person to approve it; the usual flow is that the agent proposes and the investor approves.
 
-4. **Correction authority.** The canonical test 1 says a "direct user or primary correction replaces an older inference". `claims.correct` requires the correcting evidence's authority tier to be at least that of the old claim's `source_strength`; a lower tier must use `contradict` instead. Plain `supersede` has no authority check, because a same-tier update (new guidance replacing old guidance) is ordinary.
+4. **Corrections and supersession respect authority.** A claim can only supersede a claim of equal or lower authority. A lower-authority source that disagrees records a contradiction. A same-tier update (new guidance replacing old) is an ordinary supersession.
 
-5. **Contradiction status.** The enum has both `contradicted` and `unresolved`. `contradict` sets both claims to `contradicted`; `unresolved` is left available for callers but is not set by the kernel. An authorized resolution supersedes the loser and returns the winner to `active`.
+5. **Contradiction status.** `contradict` marks both claims `contradicted`. A human resolution supersedes the loser and returns the winner to `active`. `unresolved` is available to callers and never set by the kernel.
 
-6. **Freshness policy keys.** The spec says "by claim kind" but the examples (price, holdings, estimates, calendar) are aspects. The policy looks up the first segment of the aspect (`price` in `price.last`) before falling back to the claim kind. `correction` and `user_decision` never expire by default.
+6. **Freshness keys.** The policy looks up the first segment of the aspect (`price` in `price.last`) before the claim kind, so a price can have a tighter clock than a generic fact. `correction` and `user_decision` claims do not expire by default.
 
-7. **Degraded versus expired.** Invariant 10 says facts "expire or degrade". A claim past `expires_at` is `expired` and warned; a claim older than half its clock is `degraded` and warned; both stay in the packet with a freshness label. Nothing is silently dropped.
+7. **Expiry runs from observation.** A claim's default expiry and its age in a packet are measured from its `valid_from`, else from its evidence's `observed_at`. The time a claim was typed (`created_at`) does not make old data fresh.
 
-8. **Authority before similarity.** The spec says not to promote low-authority commentary over primary evidence "because it is semantically closer". Rank order is authority first, then lexical overlap, always. On a factual query (`task_kind` in `factual_state` or `research_update`, and no sentiment words in the query), social chatter is additionally omitted when primary or system evidence is present. On a sentiment query it stays, ranked after primary.
+8. **Degraded versus expired.** Past `expires_at` is `expired`. Older than half its clock is `degraded`. Both stay in the packet with a label and a warning.
 
-9. **Future leakage cutoff.** `as_of` cuts evidence by `observed_at` and claims, questions, invalidations and revisions by `created_at`. Later objects are not listed as omitted either; from the packet's point of view they do not exist. Triggers have no creation time in the spec and are included whenever active.
+9. **Authority before similarity.** Rank is authority, then lexical overlap. On a factual query (task kind `factual_state` or `research_update`, and no sentiment words), social chatter is left out whenever primary or system evidence is present. On a sentiment query it stays, ranked after primary.
 
-10. **Packet hash coverage.** The hash covers `as_of`, policy version, task, query hash, selected refs with their per-object hashes and as_of, omitted, sorted warnings and the runtime block. It does not cover the packet id or `created_at`, so a rebuild against the same data yields the same hash with a new id. Changing the model id changes the hash, since the runtime is part of what was supplied.
+10. **Two time cuts.** `as_of` cuts by valid time. `known_as_of` also cuts by the recording times the store sets itself (`ingested_at`, `recorded_at`, relation `created_at`, receipt `occurred_at`, which callers cannot set and the schema keeps in order) and rebuilds claim and revision statuses from those times. Retractions write a receipt so that they can be dated. Question, invalidation and trigger states are not rebuilt.
 
-11. **Runtime block fields.** The extension lists `model_id, model_version, provider, route_id, policy_version, tool_versions, source_feed_as_of, fallback_used, fallback_reason`. The first four and a boolean `fallback_used` are required; `policy_version` defaults to the policy in use; `tool_versions` and `source_feed_as_of` default to empty. The schema CHECK requires `model_id`, `policy_version` and a boolean `fallback_used`.
+11. **What the packet hash covers.** Both time cuts, policy version, task, query hash, selected refs with their object hashes, omissions, sorted warnings and the runtime block. Not the packet id or `created_at`, so a rebuild against the same data gives the same hash under a new id. Changing the model changes the hash.
 
-12. **Mark staleness.** Extension test 17 asks for a warning when `mark_as_of` is stale relative to `as_of`. The reference extension warned whenever the mark was older than the position by any amount, which would warn on a live crypto mark one minute older than its snapshot. This implementation allows a lag of `freshness_seconds["mark"]` (default 3600 seconds) before warning, and always warns when `mark_source_class` is `stale_cache`. The weekend_mixed_marks fixture therefore warns on the equity and not on the crypto asset.
+12. **Contradiction parties keep their own rank.** Both sides of an open contradiction, and the selected revision, are kept ahead of the budget. Their authority rank is not changed; an earlier version raised it, which let a weak claim borrow authority.
 
-13. **Snapshot age and withheld quantities.** A position-grade snapshot past its freshness limit is served with its quantity and a warning. Quantity is withheld only when the best snapshot is not position-grade (`plan`, `estimate`, `stale_cache`). "Best" is highest source class, ties broken by newest `as_of`.
+13. **Mark staleness.** A mark may lag its position by `freshness_seconds["mark"]` (default one hour) before a warning, and always warns when its source is `stale_cache`. So a Friday equity close next to a Sunday crypto position warns, and a live crypto mark one minute older than its snapshot does not.
 
-14. **Reconcile binds a reconciled snapshot.** The extension says reconcile binds the fill "to a new PositionSnapshot". This implementation requires that snapshot to have `source_class='reconciled'`; binding a plan or an estimate is refused.
+14. **Choosing a position.** Among position-grade snapshots at or before `now`, fresh ones win over stale ones, then the higher source class, then the newer. A newer position-grade snapshot that reports a different quantity is warned, so a stale reconciled holding cannot silently hide a fresh broker position.
 
-15. **Rejection and outcomes as review receipts.** The extension has no receipt kind for rejection or outcome. Both are written as `review` receipts bound to the decision, with a payload saying which. The decision row does not change when an outcome is attached; what happened afterwards is evidence about the decision, not a status of it.
+15. **Who checks the mandate.** The kernel computes the check inside `propose_decision`; the caller cannot pass one. NAV and current exposure still come from the caller, because the kernel does not value portfolios. The check records them and who supplied them, lists the limits it did not check, and treats a missing NAV on a buy as a breach rather than a pass.
 
-16. **Mandate retirement.** The extension does not say who may retire a mandate. `retire_mandate` writes a `review` receipt with the given authority (default `direct_user:owner`) and requires the mandate to be `active`.
+16. **Daily notional.** The daily cap counts decisions in the same scope approved on the same UTC date that are still approved or executed. The check runs at proposal and again at approval inside the write lock, so several proposals that each passed cannot all be approved past the cap.
 
-17. **Decision subject foreign key.** `decision_record.subject_id` references `subject`, so the ported extension tests create subjects `SUBJ_A`, `SUBJ_0..2`, `EQ_1`, `EQ_2` in a fixture before use. The reference extension had no subject table.
+17. **Approvals lapse.** An approval older than the mandate's `approval_ttl_seconds` (default one day) cannot be executed. `expire_decision` records that it lapsed.
 
-18. **Fixture format.** The canonical spec names `.jsonl` fixtures but gives no format. Each line is one operation (`op`) replayed through the public functions, with `as` to alias the result, `$alias` references, `expect_error: true` for operations the kernel must refuse, and `expect` lines for assertions. Replays use a fixed clock and counter-based ids so two loads of one fixture are identical, which is what the replay test depends on.
+18. **Excess slippage is flagged in the receipt.** An execution receipt stores the expected price, the fill, slippage in basis points and whether the fill was partial. The sign follows the side of the trade: buys and covers pay more when the fill is above expected, sells and shorts lose when it is below. Positive is a cost. A `reduce` or `close` needs an explicit `side` to be measured. A fill beyond `max_slippage_bps` is flagged in the receipt. It is not refused, because the fill has already happened.
 
-19. **Fixture health checks.** Known-answer fixtures are stored as `health_check` receipts keyed by fixture name with the file's sha256 and pass or fail. The test suite writes one per fixture; nothing schedules them.
+19. **Rejections, expiries and outcomes are review receipts.** There is no separate receipt kind for them. The payload says which. An outcome does not change the decision row.
 
-20. **Benchmarks removed.** The canonical spec's section 12 and implementation steps 6 and 7 described an experiment design against a public continual-learning benchmark. They are replaced by SPEC.md section 15, which states that no evaluation was run and that no behavioural or outcome claim is made. The `benchmarks/` folder is omitted.
+20. **One receipt chain per store.** Every receipt links to the previous one, whatever object it is about. The schema refuses a receipt that does not link to the current head, so concurrent writers cannot fork the chain; the second waits for the write lock and links to the first. Hashing happens in Python, so the schema cannot check that a chain hash is correct, only that it links. `verify_chain` checks correctness.
 
-21. **Production details in section 9.** Counts and limitations of the production system were removed; section 9 now only states the relationship.
+21. **Fixture format.** One JSON operation per line, replayed through the public functions. `as` names a result, `$name` refers to it, `expect_error: true` marks an operation the kernel must refuse, and `expect` lines are assertions checked at that point. Fixed clock and counter ids make replays identical.
 
-22. **Em dashes.** None appear in prose files. Lists in running text use commas or semicolons.
+22. **Health checks.** Fixture results can be stored as `health_check` receipts with the fixture's sha256 and pass or fail. Nothing here schedules them.
+
+23. **Sells must cite a holding.** Direction is declared by the caller, and decreasing trades skip the position limits. To stop a "sell" from opening a short that no limit sees, a sell, reduce or close must cite a position-grade snapshot with a positive quantity and cannot exceed its marked value, and a cover must cite a short.
+
+24. **Reaffirming re-points the dependency.** When a human reaffirms a stale claim, it gets a `depends_on` edge to the current successor of each basis that changed. The old edges stay for history; changes older than the reaffirmation no longer warn.
+
+25. **Receipts vouch for rows.** Approval and execution receipts store the proposal's hash, activation the mandate body's, selection the revision's assumptions and evidence hashes, reconcile the snapshot's. `verify_chain` checks them, so a proposal edited after approval is detected even if the triggers were dropped.

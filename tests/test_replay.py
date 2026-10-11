@@ -1,4 +1,4 @@
-"""Canonical test 7: rebuilding a packet from frozen fixture data yields the same
+"""SPEC test 7: rebuilding a packet from frozen fixture data yields the same
 object references, warnings and hash. Also: a changed input changes the hash,
 and the hash covers ids and source hashes rather than rendered prose."""
 from fmk import fixtures, retrieval

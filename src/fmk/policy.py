@@ -1,15 +1,13 @@
-"""Freshness and authority policies.
+"""Freshness and authority policies, as plain versioned data.
 
-What this module does: declares, as plain data, how long each claim kind
-stays current (invariant 10), how authority tiers rank (used by retrieval
-rule 7.2.3), and how fresh a position snapshot must be per source class.
-It computes freshness verdicts and warning strings. The policy is
-versioned; the version string travels with every packet and synthesis.
+How long each claim kind or aspect stays current (invariant 10), how
+position snapshots age per source class, and how far a mark may lag its
+position. Ages run from when the underlying evidence was observed (or a
+claim's valid_from), not from when someone typed the claim, so a week-old
+price entered today is a week old.
 
-What this module does not do: it does not decide which claim is true, it
-does not resolve contradictions, and it does not delete or hide stale
-data. Stale means "served with a warning", never "silently used" and
-never "silently dropped".
+Stale means served with a warning. Nothing here hides or deletes data, and
+nothing here decides which claim is true.
 """
 from __future__ import annotations
 
@@ -61,13 +59,18 @@ class FreshnessPolicy:
             return None
         return (parse_ts(created_at) + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def verdict(self, claim: Claim, as_of: str) -> tuple[str, Optional[str]]:
+    def verdict(self, claim: Claim, as_of: str, basis: Optional[str] = None) -> tuple[str, Optional[str]]:
         """Return ('fresh'|'expired'|'degraded', warning_or_None) for a claim at as_of.
+
+        basis is when the claim's content was true of the world: valid_from,
+        else the evidence's observed_at. Callers that only have the claim may
+        omit it and the claim's created_at is used.
 
         expired:  expires_at is at or before as_of.
         degraded: older than half its TTL, so still usable but flagged.
         """
         now = parse_ts(as_of)
+        start = parse_ts(basis or claim.valid_from or claim.created_at)
         if claim.expires_at is not None and parse_ts(claim.expires_at) <= now:
             return "expired", (
                 f"claim:{claim.id} ({claim.aspect}) expired at {claim.expires_at}; "
@@ -75,7 +78,7 @@ class FreshnessPolicy:
             )
         ttl = self.ttl_for(claim)
         if ttl:
-            age = (now - parse_ts(claim.created_at)).total_seconds()
+            age = (now - start).total_seconds()
             if age > ttl / 2:
                 return "degraded", (
                     f"claim:{claim.id} ({claim.aspect}) is {int(age)}s old against a {ttl}s clock; "
@@ -100,14 +103,14 @@ def snapshot_age_warning(source_class: str, as_of: str, now: str,
     return None
 
 
-# A mark may lag its position by this much before it is called stale. Markets
-# close; a Friday mark on a Sunday position is the case this exists for.
+# A mark may lag its position by this much before it is called stale. A Friday
+# equity close next to a Sunday crypto position is the case this exists for.
 DEFAULT_MARK_LAG_SECONDS = 3600
 
 
 def mark_staleness_warning(mark_as_of: Optional[str], position_as_of: str,
                            mark_source_class: Optional[str], freshness_seconds: dict) -> Optional[str]:
-    """Position fresh, mark stale: warn, do not withhold (extension test 17)."""
+    """Position fresh, mark stale: warn, do not withhold (SPEC test 17)."""
     if not mark_as_of:
         return None
     lag = (parse_ts(position_as_of) - parse_ts(mark_as_of)).total_seconds()

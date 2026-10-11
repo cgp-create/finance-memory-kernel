@@ -1,4 +1,4 @@
-"""Canonical required tests 1, 2, 3, 4 and 6, plus direct checks on invariants 1, 2, 8, 11."""
+"""SPEC tests 1, 2, 3, 4 and 6, plus direct checks on invariants 1, 2, 8, 11."""
 import sqlite3
 import threading
 
@@ -102,7 +102,8 @@ def test_expired_price_needs_warning(store, acme):
                                "system_measurement", {"last": 48.2})
     c = claims.add_claim(store, sid, ev, "price.last", "fact", "last price 48.2", value=48.2,
                          created_at="2026-10-09T15:59:30Z")
-    assert claims.get_claim(store, c).expires_at == "2026-10-09T16:14:30Z"  # 15 minute clock from policy
+    # 15 minute clock from policy, running from when the price was observed, not when the claim was typed
+    assert claims.get_claim(store, c).expires_at == "2026-10-09T16:14:00Z"
     pkt = retrieval.build_packet(store, sid, "last price", "2026-10-10T09:00:00Z", RUNTIME)
     sel = {s["ref"]: s for s in pkt.selected}
     assert sel[f"claim:{c}"]["freshness"] == "expired"

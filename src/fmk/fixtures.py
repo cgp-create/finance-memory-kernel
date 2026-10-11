@@ -1,17 +1,16 @@
-"""JSONL fixture loader.
+"""JSONL fixture replay.
 
-What this module does: reads a fixture file line by line and replays each
-operation against a Store through the same public functions a caller
-would use, so that fixtures exercise the invariants rather than bypass
-them. Each line is one JSON object with an "op" field. A line may name
-itself with "as" so later lines can refer to it as "$name". An "expect"
-line records an assertion the tests check; an op may carry
-"expect_error": true to say the kernel must refuse it.
+Reads a fixture line by line and replays each operation through the same
+public functions a caller would use, so fixtures exercise the invariants
+rather than bypass them. Each line is a JSON object with an "op". A line
+may name its result with "as" for later lines to use as "$name". An
+"expect" line is an assertion checked at that point in the replay; an op
+with "expect_error": true must be refused by the kernel.
 
-What this module does not do: it does not fabricate ids outside the file;
-with a fixed clock the replay of a fixture is byte-for-byte reproducible,
-which is what packet replay tests rely on. It contains no real names,
-tickers, accounts or credentials and is checked for that by a test.
+Replays use a fixed clock and counter ids, so two replays of one fixture
+produce identical rows, hashes and receipt chains. Fixtures ship inside
+the package (fmk/data/fixtures) and are scanned by a test for anything
+that looks like real data.
 """
 from __future__ import annotations
 
@@ -24,7 +23,7 @@ from . import claims, decisions, evidence, receipts, retrieval, underwriting
 from .models import InvariantViolation, KernelError, MandateBody
 from .store import Store
 
-FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures"
+FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "fixtures"
 
 
 def fixture_path(name: str) -> Path:
@@ -113,6 +112,8 @@ def _apply(run: FixtureRun, op: str, a: dict) -> Any:
     if op == "subject":
         return evidence.add_subject(s, a["key"], a.get("title", a["key"]), a.get("type", "issuer"),
                                     a.get("namespace", "demo"), subject_id=a.get("id"))
+    if op == "depends_on":
+        return claims.add_dependency(s, a["dependent"], a["on"])
     if op == "evidence":
         return evidence.add_evidence(s, a["subject_id"], a["source_kind"], a["source_ref"], a["observed_at"],
                                      a["authority_tier"], a["payload"], a.get("supersedes_evidence_id"),
@@ -141,7 +142,7 @@ def _apply(run: FixtureRun, op: str, a: dict) -> Any:
                                     created_at=a.get("created_at"))
     if op == "revision":
         return underwriting.draft_revision(s, a["subject_id"], a["horizon"], a["thesis_summary"], a["cases"],
-                                           parent_id=a.get("parent_id"), proposed_by=a.get("proposed_by", "human"),
+                                           parent_id=a.get("parent_id"), proposed_by=a.get("proposed_by", "direct_user:owner"),
                                            revision_id=a.get("id"), created_at=a.get("created_at"))
     if op == "review":
         return underwriting.review_revision(s, a["revision_id"], a["authority_ref"], a.get("notes", ""))
@@ -159,36 +160,30 @@ def _apply(run: FixtureRun, op: str, a: dict) -> Any:
                                         a.get("action_type", "review"), a.get("priority", 3))
     if op == "receipt":
         return receipts.add_receipt(s, a["kind"], a["object_ref"], a["authority_ref"], a.get("payload"),
-                                    a.get("prior_receipt_id"), a.get("occurred_at"))
+                                    a.get("prior_receipt_id"))
     if op == "mandate":
         return decisions.propose_mandate(s, a["scope_ref"], MandateBody(**a["body"]), a.get("parent_id"))
     if op == "activate_mandate":
         return decisions.activate_mandate(s, a["mandate_id"], a["authority_ref"])
     if op == "retire_mandate":
-        return decisions.retire_mandate(s, a["mandate_id"], a.get("authority_ref", "direct_user:owner"))
+        return decisions.retire_mandate(s, a["mandate_id"], a["authority_ref"])
     if op == "snapshot":
         return decisions.add_snapshot(s, a["scope_ref"], a["subject_id"], a["as_of"], a["source_class"],
                                       quantity=a.get("quantity"), mark_price=a.get("mark_price"),
                                       mark_as_of=a.get("mark_as_of"), mark_source_class=a.get("mark_source_class"),
-                                      cash_available=a.get("cash_available"), source_ref=a.get("source_ref"),
-                                      cost_basis=a.get("cost_basis"), pending_order_refs=a.get("pending_order_refs"))
+                                      cash_available=a.get("cash_available"), source_ref=a.get("source_ref"))
     if op == "decision":
-        m = decisions.active_mandate(s, a["scope_ref"])
-        if m is None:
-            raise InvariantViolation("no active mandate for scope")
-        chk = decisions.check_against_mandate(a.get("proposal", {}), m, nav=a.get("nav", 0.0),
-                                              current_subject_exposure_pct=a.get("current_subject_exposure_pct", 0.0),
-                                              venue=a.get("venue"), asset_class=a.get("asset_class"),
-                                              subject_id=a.get("subject_id"))
         return decisions.propose_decision(s, a["scope_ref"], a["decision_kind"], a["intent_rung"],
-                                          a.get("proposal", {}), a["rationale_text"], chk,
-                                          subject_id=a.get("subject_id"), evidence_ids=a.get("evidence_ids"),
+                                          a.get("proposal", {}), a["rationale_text"],
+                                          proposed_by=a.get("proposed_by", "model:assistant"),
+                                          subject_id=a.get("subject_id"), nav=a.get("nav"),
+                                          current_subject_exposure_pct=a.get("current_subject_exposure_pct", 0.0),
+                                          asset_class=a.get("asset_class"), evidence_ids=a.get("evidence_ids"),
                                           selected_revision_id=a.get("selected_revision_id"),
                                           position_snapshot_ids=a.get("position_snapshot_ids"),
-                                          snapshot_freshness=a.get("snapshot_freshness", "fresh"),
                                           conviction=a.get("conviction"),
                                           change_triggers_text=a.get("change_triggers_text"),
-                                          proposed_by=a.get("proposed_by", "model"), intent_ref=a.get("intent_ref"))
+                                          intent_ref=a.get("intent_ref"))
     if op == "approve":
         return decisions.approve_decision(s, a["decision_id"], a["authority_ref"], a.get("override"))
     if op == "execute":
@@ -202,7 +197,7 @@ def _apply(run: FixtureRun, op: str, a: dict) -> Any:
     if op == "packet":
         return retrieval.build_packet(s, a["subject_id"], a["query"], a["as_of"], a["runtime"],
                                       task_kind=a.get("task_kind", "research_update"), budget=a.get("budget", 12),
-                                      packet_id=a.get("id"))
+                                      packet_id=a.get("id"), known_as_of=a.get("known_as_of"))
     raise KernelError(f"unknown fixture op {op!r}")
 
 
@@ -223,52 +218,53 @@ def _check(run: FixtureRun, e: dict) -> list[str]:
             return head + run.ids[tail]
         return run.ref(v)
 
-    for e in [e]:
-        kind = e["check"]
-        try:
-            if kind == "selected_revision":
-                r = underwriting.selected_revision(s, _ref(e["subject"]), e["horizon"])
-                ok = r is not None and r.id == _ref(e["is"])
-            elif kind == "selected_count":
-                n = len(s.query("case_set_revision", "subject_id=? AND horizon=? AND status='selected'",
-                                (_ref(e["subject"]), e["horizon"])))
-                ok = n == e["is"]
-            elif kind == "claim_status":
-                ok = s.get("claim", _ref(e["claim"])).status == e["is"]
-            elif kind == "packet_contains":
-                ok = _ref(e["ref"]) in retrieval.packet_refs(s.get("context_packet", _ref(e["packet"])))
-            elif kind == "packet_omits":
-                ok = _ref(e["ref"]) not in retrieval.packet_refs(s.get("context_packet", _ref(e["packet"])))
-            elif kind == "packet_warning_contains":
-                ok = any(e["text"] in w for w in s.get("context_packet", _ref(e["packet"])).warnings)
-            elif kind == "rendered_output_starts_with":
-                ok = retrieval.render_output(s.get("context_packet", _ref(e["packet"])), "body").startswith(e["text"])
-            elif kind in ("position_warning_contains", "position_status", "position_source_class"):
-                cur = decisions.current_position(s, e["scope"], _ref(e["subject"]), now=e.get("now"),
-                                                 mandate=decisions.active_mandate(s, e["scope"]))
-                if kind == "position_warning_contains":
-                    ok = any(e["text"] in w for w in cur.get("warnings", []))
-                elif kind == "position_status":
-                    ok = cur["status"] == e["is"]
-                else:
-                    ok = cur.get("source_class") == e["is"]
-            elif kind == "decision_status":
-                ok = decisions.get_decision(s, _ref(e["decision"])).status == e["is"]
-            elif kind == "decision_has_no_approval":
-                ok = decisions.get_decision(s, _ref(e["decision"])).approval_receipt_id is None
-            elif kind == "mandate_check_status":
-                ok = decisions.get_decision(s, _ref(e["decision"])).mandate_check["status"] == e["is"]
-            elif kind == "mandate_check_breach_contains":
-                ok = any(e["text"] in b for b in decisions.get_decision(s, _ref(e["decision"])).mandate_check["breaches"])
-            elif kind == "declined_count":
-                ok = len(decisions.declined_decisions(s, e["scope"])) == e["is"]
+    kind = e["check"]
+    try:
+        if kind == "claim_status_any":
+            ok = s.get("claim", _ref(e["claim"])).status in e["in"]
+        elif kind == "selected_revision":
+            r = underwriting.selected_revision(s, _ref(e["subject"]), e["horizon"])
+            ok = r is not None and r.id == _ref(e["is"])
+        elif kind == "selected_count":
+            n = len(s.query("case_set_revision", "subject_id=? AND horizon=? AND status='selected'",
+                            (_ref(e["subject"]), e["horizon"])))
+            ok = n == e["is"]
+        elif kind == "claim_status":
+            ok = s.get("claim", _ref(e["claim"])).status == e["is"]
+        elif kind == "packet_contains":
+            ok = _ref(e["ref"]) in retrieval.packet_refs(s.get("context_packet", _ref(e["packet"])))
+        elif kind == "packet_omits":
+            ok = _ref(e["ref"]) not in retrieval.packet_refs(s.get("context_packet", _ref(e["packet"])))
+        elif kind == "packet_warning_contains":
+            ok = any(e["text"] in w for w in s.get("context_packet", _ref(e["packet"])).warnings)
+        elif kind == "rendered_output_starts_with":
+            ok = retrieval.render_output(s.get("context_packet", _ref(e["packet"])), "body").startswith(e["text"])
+        elif kind in ("position_warning_contains", "position_status", "position_source_class"):
+            cur = decisions.current_position(s, e["scope"], _ref(e["subject"]), now=e.get("now"),
+                                             mandate=decisions.active_mandate(s, e["scope"]))
+            if kind == "position_warning_contains":
+                ok = any(e["text"] in w for w in cur.get("warnings", []))
+            elif kind == "position_status":
+                ok = cur["status"] == e["is"]
             else:
-                ok = False
-                failures.append(f"unknown check {kind}")
-                continue
-        except Exception as ex:  # noqa: BLE001
-            failures.append(f"{kind}: raised {ex!r}")
-            continue
-        if not ok:
-            failures.append(f"{kind}: {e}")
+                ok = cur.get("source_class") == e["is"]
+        elif kind == "decision_status":
+            ok = decisions.get_decision(s, _ref(e["decision"])).status == e["is"]
+        elif kind == "decision_has_no_approval":
+            ok = decisions.get_decision(s, _ref(e["decision"])).approval_receipt_id is None
+        elif kind == "mandate_check_status":
+            ok = decisions.get_decision(s, _ref(e["decision"])).mandate_check["status"] == e["is"]
+        elif kind == "mandate_check_breach_contains":
+            ok = any(e["text"] in b for b in decisions.get_decision(s, _ref(e["decision"])).mandate_check["breaches"])
+        elif kind == "declined_count":
+            ok = len(decisions.declined_decisions(s, e["scope"])) == e["is"]
+        else:
+            ok = False
+            failures.append(f"unknown check {kind}")
+            return failures
+    except Exception as ex:  # noqa: BLE001
+        failures.append(f"{kind}: raised {ex!r}")
+        return failures
+    if not ok:
+        failures.append(f"{kind}: {e}")
     return failures

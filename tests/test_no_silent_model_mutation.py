@@ -1,4 +1,4 @@
-"""Canonical test 5: retrieval, summarisation and draft generation cannot modify
+"""SPEC test 5: retrieval, summarisation and draft generation cannot modify
 selected underwriting or cases. Also invariant 3 at the SQL level."""
 import sqlite3
 
@@ -19,7 +19,7 @@ def test_retrieve_summarize_draft_leave_underwriting_untouched(store, acme, sele
     rendered = retrieval.render_output(pkt, text)
     assert "not an exhaustive record" in rendered
     draft = retrieval.propose_draft_from_packet(store, pkt, "12m", "model proposes lower bull",
-                                                cases_for(acme["evidence"], 0.15, 0.5, 0.35), proposed_by="model")
+                                                cases_for(acme["evidence"], 0.15, 0.5, 0.35), proposed_by="model:assistant")
     after = store.snapshot_tables("case_set_revision", "research_case", "receipt")
     # receipts unchanged, selected revision row unchanged, cases of selected revision unchanged
     assert after["receipt"] == before["receipt"]
@@ -33,7 +33,7 @@ def test_retrieve_summarize_draft_leave_underwriting_untouched(store, acme, sele
     new_revs = [r for r in after["case_set_revision"] if r[0] not in {x[0] for x in before["case_set_revision"]}]
     assert [r[0] for r in new_revs] == [draft]
     d = underwriting.get_revision(store, draft)
-    assert d.status == "draft" and d.parent_id == selected and d.proposed_by == "model"
+    assert d.status == "draft" and d.parent_id == selected and d.proposed_by == "model:assistant"
     assert underwriting.selected_revision(store, acme["subject"], "12m").id == selected
     # the diff is a read
     diff = underwriting.diff_revisions(store, selected, draft)

@@ -1,17 +1,15 @@
 """Underwriting: CaseSetRevision, Case, diff, review and the selection guard.
 
-What this module does: drafts revisions and their cases, computes the
-assumptions and evidence hashes, diffs two revisions, and moves a revision
-through draft -> reviewed -> selected -> retired. Selection is one
-transaction that writes the selection receipt and flips the status; the
-partial unique index in the schema is what makes two concurrent selections
-impossible (invariants 3, 4, 5, 11). Invalidations and triggers live here
-too because they attach to cases.
+Drafts revisions with their cases, hashes assumptions and evidence, diffs
+two revisions, and moves a revision draft -> reviewed -> selected ->
+retired. Anyone, including a model, may draft. Review and selection need a
+human authority (direct_user or reviewer), and the reviewer cannot be the
+author of the draft. Selection is one transaction that writes the selection
+receipt and flips the status; the partial unique index is what makes two
+concurrent selections impossible (invariants 3, 4, 5, 11).
 
-What this module does not do: it does not pick a revision. A model or a
-retrieval step may call draft_revision; only an authority named in a
-selection receipt may call select_revision. Nothing here edits a
-probability in place; a changed probability is a new draft.
+Nothing here edits a probability in place; a changed probability is a new
+draft. Invalidations and triggers live here because they attach to cases.
 """
 from __future__ import annotations
 
@@ -27,20 +25,16 @@ from .models import (
     KernelError,
     Trigger,
     content_hash,
-    new_id,
     norm_ts,
 )
+from . import authority
 from .receipts import add_receipt, require_receipt
 from .store import Store
 
 
-class CaseSpec(dict):
-    """A dict with the fields of a Case minus id/revision_id/display_order."""
-
-
 def draft_revision(store: Store, subject_id: str, horizon: str, thesis_summary: str,
                    cases: list[dict[str, Any]], parent_id: Optional[str] = None,
-                   proposed_by: str = "human", revision_id: Optional[str] = None,
+                   proposed_by: str = "direct_user:owner", revision_id: Optional[str] = None,
                    created_at: Optional[str] = None) -> str:
     """Create a draft revision with its cases in one transaction.
 
@@ -48,6 +42,7 @@ def draft_revision(store: Store, subject_id: str, horizon: str, thesis_summary: 
     optional price_target, expected_return_pct, return_anchor_at,
     evidence_for_ids, evidence_against_ids, invalidation_ids.
     """
+    authority.parse(proposed_by)
     if not cases:
         raise KernelError("a revision needs at least one case")
     total = sum(float(c["probability"]) for c in cases)
@@ -80,6 +75,7 @@ def draft_revision(store: Store, subject_id: str, horizon: str, thesis_summary: 
         id=rid, subject_id=subject_id, parent_id=parent_id, horizon=horizon, status="draft",
         thesis_summary=thesis_summary, assumptions_hash=assumptions_hash, evidence_hash=evidence_hash,
         created_at=norm_ts(created_at) if created_at else store.clock(), proposed_by=proposed_by,  # type: ignore[arg-type]
+        recorded_at=store.clock(),
     )
     with store.transaction():
         store.insert(rev)
@@ -118,6 +114,8 @@ def review_revision(store: Store, revision_id: str, authority_ref: str, notes: s
     rev = get_revision(store, revision_id)
     if rev.status != "draft":
         raise InvariantViolation(f"only a draft can be reviewed; this one is {rev.status}")
+    authority.require_human(authority_ref, "invariant 5: review")
+    authority.require_distinct(authority_ref, rev.proposed_by, "invariant 5: review")
     with store.transaction():
         rcpt = add_receipt(store, "review", f"case_set:{revision_id}", authority_ref, {"notes": notes})
         store.update("case_set_revision", revision_id, status="reviewed", review_receipt_id=rcpt)
@@ -139,8 +137,7 @@ def select_revision(store: Store, revision_id: str, authority_ref: str,
         raise InvariantViolation("invariant 5: a draft must be reviewed before it can be selected")
     if rev.status != "reviewed":
         raise InvariantViolation(f"cannot select a revision in status {rev.status}")
-    if not authority_ref.strip() or authority_ref.startswith(("model", "retrieval", "assistant")):
-        raise InvariantViolation("invariant 5: selection requires a human or designated authority, not a model")
+    authority.require_human(authority_ref, "invariant 5: selection")
     with store.transaction(immediate=True):
         current = selected_revision(store, rev.subject_id, rev.horizon)
         if current is not None:
@@ -150,6 +147,7 @@ def select_revision(store: Store, revision_id: str, authority_ref: str,
             store.update("case_set_revision", current.id, status="retired", retired_at=store.clock())
         rcpt = add_receipt(store, "selection", f"case_set:{revision_id}", authority_ref,
                            {"reviewed_revision": revision_id, "review_receipt_id": rev.review_receipt_id,
+                            "assumptions_hash": rev.assumptions_hash, "evidence_hash": rev.evidence_hash,
                             "replaces": current.id if current else None, "notes": notes})
         store.update("case_set_revision", revision_id, status="selected",
                      selected_at=store.clock(), selection_receipt_id=rcpt)
@@ -160,6 +158,7 @@ def retire_revision(store: Store, revision_id: str, authority_ref: str, reason: 
     rev = get_revision(store, revision_id)
     if rev.status == "retired":
         raise InvariantViolation("already retired")
+    authority.require_human(authority_ref, "retiring a revision")
     with store.transaction():
         rcpt = add_receipt(store, "review", f"case_set:{revision_id}", authority_ref,
                            {"retired": True, "reason": reason})
@@ -189,7 +188,7 @@ def diff_revisions(store: Store, old_id: str, new_id_: str) -> dict:
 
 
 def assert_selection_is_proven(store: Store, revision_id: str) -> None:
-    """Spec section 8: 'this is the active underwriting' needs the revision in
+    """SPEC section 8: 'this is the active underwriting' needs the revision in
     status selected AND a matching selection receipt."""
     rev = get_revision(store, revision_id)
     if rev.status != "selected" or not rev.selection_receipt_id:
@@ -208,13 +207,13 @@ def add_invalidation(store: Store, subject_id: str, condition: str, observable_d
         severity=severity, observable_definition=observable_definition, status="active",
         evidence_ids=list(evidence_ids or []),
         created_at=norm_ts(created_at) if created_at else store.clock(), evaluated_at=None,  # type: ignore[arg-type]
+        recorded_at=store.clock(),
     )
     return store.insert(rec)
 
 
 def link_evidence_against(store: Store, invalidation_id: str, evidence_id: str) -> None:
-    """Attach evidence to an invalidation. This is the 'link against the
-    assumption' step of section 6.1 step 3; it changes no probability."""
+    """Attach evidence to an invalidation (SPEC 6.1 step 3). Changes no probability."""
     inv = store.get("invalidation", invalidation_id)
     if not store.exists("evidence", evidence_id):
         raise InvariantViolation("evidence does not exist")
@@ -244,7 +243,7 @@ def add_trigger(store: Store, subject_id: str, name: str, condition: str, trigge
 
 
 def set_trigger_state(store: Store, trigger_id: str, state: str) -> None:
-    """A trigger calls for review. It is never permission to trade."""
+    """A trigger calls for review. It does not authorise a trade."""
     if state not in TRIGGER_STATES:
         raise KernelError(f"unknown trigger state {state!r}")
     store.update("research_trigger", trigger_id, state=state, last_evaluated_at=store.clock())
