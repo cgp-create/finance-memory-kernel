@@ -35,7 +35,7 @@ Four things get mixed up when an agent works on a portfolio for months: what a s
 
 ## The ten problems
 
-From "10 Hard Problems in Agentic Investment Research and Trading" (October 2026). Where a status is between two labels, it gets the lower one.
+From "10 Hard Problems in Agentic Investment Research and Trading" by Carlos Pereira (October 2026). Where a status is between two labels, it gets the lower one.
 
 | # | Problem | What the kernel does | Status |
 |---|---|---|---|
