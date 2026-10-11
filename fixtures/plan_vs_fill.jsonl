@@ -1,0 +1,10 @@
+# An approved plan is older than a broker fill. The fill wins; the plan is flagged as overtaken by execution.
+{"op":"subject","as":"a","key":"SUBJ_A","title":"Synthetic security A","type":"security"}
+{"op":"mandate","as":"m1","scope_ref":"scope_demo","body":{"objective_text":"growth sleeve","horizon":"12m","allowed_asset_classes":["equity"],"allowed_venues":["venue_a"],"max_position_pct":10.0,"max_subject_exposure_pct":15.0,"per_trade_notional_cap":50000}}
+{"op":"activate_mandate","mandate_id":"$m1","authority_ref":"direct_user:owner"}
+{"op":"snapshot","as":"s_plan","scope_ref":"scope_demo","subject_id":"$a","as_of":"2026-10-09T10:00:00Z","source_class":"plan","quantity":100}
+{"op":"expect","check":"position_status","scope":"scope_demo","subject":"$a","now":"2026-10-09T10:15:00Z","is":"unverified"}
+{"op":"snapshot","as":"s_fill","scope_ref":"scope_demo","subject_id":"$a","as_of":"2026-10-09T10:30:00Z","source_class":"broker_fill","quantity":100,"mark_price":50.0,"mark_as_of":"2026-10-09T10:30:00Z"}
+{"op":"expect","check":"position_status","scope":"scope_demo","subject":"$a","now":"2026-10-09T10:45:00Z","is":"ok"}
+{"op":"expect","check":"position_source_class","scope":"scope_demo","subject":"$a","now":"2026-10-09T10:45:00Z","is":"broker_fill"}
+{"op":"expect","check":"position_warning_contains","scope":"scope_demo","subject":"$a","now":"2026-10-09T10:45:00Z","text":"do not report as pending"}

@@ -1,0 +1,10 @@
+# The user said yes in conversation. No approval receipt was written. The decision is still proposed.
+{"op":"subject","as":"a","key":"SUBJ_A","title":"Synthetic security A","type":"security"}
+{"op":"mandate","as":"m1","scope_ref":"scope_demo","body":{"objective_text":"growth sleeve","horizon":"12m","allowed_asset_classes":["equity"],"allowed_venues":["venue_a"],"max_position_pct":10.0,"max_subject_exposure_pct":15.0,"per_trade_notional_cap":50000}}
+{"op":"activate_mandate","mandate_id":"$m1","authority_ref":"direct_user:owner"}
+{"op":"evidence","as":"ev_chat","subject_id":"$a","source_kind":"conversation","source_ref":"synthetic://conversation/turn-42","observed_at":"2026-10-09T11:00:00Z","authority_tier":"direct_user","payload":{"text":"yes go ahead"}}
+{"op":"decision","as":"d1","scope_ref":"scope_demo","subject_id":"$a","decision_kind":"trade","intent_rung":"action","proposal":{"direction":"buy","notional":5000,"venue":"venue_a"},"rationale_text":"adds to base position after guidance confirmation","nav":100000,"venue":"venue_a","asset_class":"equity","evidence_ids":["$ev_chat"]}
+# Failure state: execution without an approval receipt is refused.
+{"op":"execute","decision_id":"$d1","authority_ref":"venue_a","fill":{"qty":100,"px":50},"expect_error":true}
+{"op":"expect","check":"decision_status","decision":"$d1","is":"proposed"}
+{"op":"expect","check":"decision_has_no_approval","decision":"$d1"}

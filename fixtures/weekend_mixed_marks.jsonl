@@ -1,0 +1,9 @@
+# Sunday morning: equity position marked Friday close, crypto position marked live. Blended weights must warn.
+{"op":"subject","as":"eq","key":"SUBJ_EQ","title":"Synthetic equity","type":"security"}
+{"op":"subject","as":"cx","key":"SUBJ_CX","title":"Synthetic crypto asset","type":"security"}
+{"op":"mandate","as":"m1","scope_ref":"scope_demo","body":{"objective_text":"growth sleeve","horizon":"12m","allowed_asset_classes":["equity","crypto"],"allowed_venues":["venue_a","venue_b"],"max_position_pct":10.0,"max_subject_exposure_pct":15.0,"per_trade_notional_cap":50000}}
+{"op":"activate_mandate","mandate_id":"$m1","authority_ref":"direct_user:owner"}
+{"op":"snapshot","as":"s_eq","scope_ref":"scope_demo","subject_id":"$eq","as_of":"2026-10-11T09:00:00Z","source_class":"broker_position","quantity":10,"mark_price":200.0,"mark_as_of":"2026-10-09T20:00:00Z","mark_source_class":"stale_cache"}
+{"op":"snapshot","as":"s_cx","scope_ref":"scope_demo","subject_id":"$cx","as_of":"2026-10-11T09:00:00Z","source_class":"broker_position","quantity":2,"mark_price":1500.0,"mark_as_of":"2026-10-11T08:59:00Z","mark_source_class":"system_measurement"}
+{"op":"expect","check":"position_warning_contains","scope":"scope_demo","subject":"$eq","now":"2026-10-11T09:05:00Z","text":"mark is older than position"}
+{"op":"expect","check":"position_status","scope":"scope_demo","subject":"$cx","now":"2026-10-11T09:05:00Z","is":"ok"}

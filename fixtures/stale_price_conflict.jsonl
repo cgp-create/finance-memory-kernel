@@ -1,0 +1,17 @@
+# An expired price claim and two credible claims that disagree on unit economics. Neither is auto-resolved.
+{"op":"subject","as":"acme","key":"ACME","title":"Synthetic issuer ACME","type":"issuer"}
+{"op":"evidence","as":"ev_px","subject_id":"$acme","source_kind":"market_data","source_ref":"synthetic://feed/ACME/last","observed_at":"2026-10-09T15:59:00Z","authority_tier":"system_measurement","payload":{"last":48.2,"currency":"SYN"}}
+{"op":"claim","as":"c_px","subject_id":"$acme","evidence_id":"$ev_px","aspect":"price.last","kind":"fact","statement":"Last price 48.2","value":48.2,"confidence":0.99,"created_at":"2026-10-09T15:59:30Z","expires_at":"2026-10-09T16:14:30Z"}
+{"op":"evidence","as":"ev_a","subject_id":"$acme","source_kind":"sell_side_note","source_ref":"synthetic://broker_a/ACME/unit-econ","observed_at":"2026-10-02T09:00:00Z","authority_tier":"credible_secondary","payload":{"text":"Contribution margin per unit positive at 12 synthetic units"}}
+{"op":"claim","as":"c_a","subject_id":"$acme","evidence_id":"$ev_a","aspect":"unit_economics.contribution_margin","kind":"forecast","statement":"Contribution margin per unit is positive at about 12","value":12,"confidence":0.6,"created_at":"2026-10-02T09:05:00Z"}
+{"op":"evidence","as":"ev_b","subject_id":"$acme","source_kind":"channel_check","source_ref":"synthetic://channel_b/ACME/unit-econ","observed_at":"2026-10-03T09:00:00Z","authority_tier":"credible_secondary","payload":{"text":"Contribution margin per unit negative after returns, about minus 3"}}
+{"op":"claim","as":"c_b","subject_id":"$acme","evidence_id":"$ev_b","aspect":"unit_economics.contribution_margin","kind":"forecast","statement":"Contribution margin per unit is negative at about minus 3","value":-3,"confidence":0.6,"created_at":"2026-10-03T09:05:00Z"}
+{"op":"contradict","a":"$c_b","b":"$c_a"}
+{"op":"evidence","as":"ev_chat","subject_id":"$acme","source_kind":"social_post","source_ref":"synthetic://forum/thread/ACME-unit-economics","observed_at":"2026-10-04T09:00:00Z","authority_tier":"social_chatter","payload":{"text":"contribution margin per unit is obviously huge, unit economics are great, price going to 100"}}
+{"op":"claim","as":"c_chat","subject_id":"$acme","evidence_id":"$ev_chat","aspect":"unit_economics.contribution_margin","kind":"hypothesis","statement":"Unit economics contribution margin per unit is huge","confidence":0.2,"created_at":"2026-10-04T09:05:00Z"}
+{"op":"packet","as":"pkt","subject_id":"$acme","query":"What is the last price and the contribution margin per unit?","as_of":"2026-10-10T09:00:00Z","runtime":{"model_id":"synthetic-model","model_version":"1","provider":"synthetic","route_id":"r1","fallback_used":false}}
+{"op":"expect","check":"packet_warning_contains","packet":"$pkt","text":"expired"}
+{"op":"expect","check":"packet_warning_contains","packet":"$pkt","text":"unresolved contradiction"}
+{"op":"expect","check":"packet_contains","packet":"$pkt","ref":"claim:$c_a"}
+{"op":"expect","check":"packet_contains","packet":"$pkt","ref":"claim:$c_b"}
+{"op":"expect","check":"packet_omits","packet":"$pkt","ref":"claim:$c_chat"}

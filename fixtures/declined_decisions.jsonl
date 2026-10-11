@@ -1,0 +1,16 @@
+# Three no_trade records with rationale and later outcomes. The restraint report lists all three.
+{"op":"subject","as":"s0","key":"SUBJ_0","title":"Synthetic security 0","type":"security"}
+{"op":"subject","as":"s1","key":"SUBJ_1","title":"Synthetic security 1","type":"security"}
+{"op":"subject","as":"s2","key":"SUBJ_2","title":"Synthetic security 2","type":"security"}
+{"op":"mandate","as":"m1","scope_ref":"scope_demo","body":{"objective_text":"growth sleeve","horizon":"12m","allowed_asset_classes":["equity"],"allowed_venues":["venue_a"],"max_position_pct":10.0}}
+{"op":"activate_mandate","mandate_id":"$m1","authority_ref":"direct_user:owner"}
+{"op":"evidence","as":"e0","subject_id":"$s0","source_kind":"market_data","source_ref":"synthetic://feed/SUBJ_0/move","observed_at":"2026-10-01T10:00:00Z","authority_tier":"system_measurement","payload":{"move_pct":18}}
+{"op":"decision","as":"d0","scope_ref":"scope_demo","subject_id":"$s0","decision_kind":"no_trade","intent_rung":"portfolio_fit","rationale_text":"price already moved 18 percent on the news","evidence_ids":["$e0"],"nav":1}
+{"op":"decision","as":"d1","scope_ref":"scope_demo","subject_id":"$s1","decision_kind":"no_trade","intent_rung":"portfolio_fit","rationale_text":"evidence is one secondary source; need primary","nav":1}
+{"op":"decision","as":"d2","scope_ref":"scope_demo","subject_id":"$s2","decision_kind":"hold","intent_rung":"ticker_brief","rationale_text":"thesis unchanged; nothing to do","nav":1}
+# Failure state: a no_trade without a rationale is refused.
+{"op":"decision","scope_ref":"scope_demo","subject_id":"$s2","decision_kind":"no_trade","intent_rung":"quick_take","rationale_text":"   ","nav":1,"expect_error":true}
+{"op":"outcome","decision_id":"$d0","outcome":{"horizon_days":20,"subject_move_pct":-6,"note":"synthetic outcome"}}
+{"op":"outcome","decision_id":"$d1","outcome":{"horizon_days":20,"subject_move_pct":4,"note":"synthetic outcome"}}
+{"op":"outcome","decision_id":"$d2","outcome":{"horizon_days":20,"subject_move_pct":1,"note":"synthetic outcome"}}
+{"op":"expect","check":"declined_count","scope":"scope_demo","is":3}

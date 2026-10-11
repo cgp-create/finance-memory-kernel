@@ -1,0 +1,12 @@
+# Two reviewed revisions for one subject and horizon; the second selection must retire the first or fail.
+{"op":"subject","as":"acme","key":"ACME","title":"Synthetic issuer ACME","type":"issuer"}
+{"op":"evidence","as":"ev","subject_id":"$acme","source_kind":"ir_release","source_ref":"synthetic://ACME/outlook","observed_at":"2026-09-01T12:00:00Z","authority_tier":"primary","payload":{"text":"outlook unchanged"}}
+{"op":"revision","as":"rev_a","subject_id":"$acme","horizon":"12m","thesis_summary":"Revision A","cases":[{"label":"base","probability":1.0,"return_basis":"price_only","assumptions":["a"],"evidence_for_ids":["$ev"]}]}
+{"op":"revision","as":"rev_b","subject_id":"$acme","horizon":"12m","thesis_summary":"Revision B","cases":[{"label":"base","probability":1.0,"return_basis":"price_only","assumptions":["b"],"evidence_for_ids":["$ev"]}]}
+{"op":"review","revision_id":"$rev_a","authority_ref":"reviewer:synthetic_pm"}
+{"op":"review","revision_id":"$rev_b","authority_ref":"reviewer:synthetic_pm"}
+{"op":"select","revision_id":"$rev_a","authority_ref":"direct_user:owner"}
+# Failure state: selecting B without retiring A is refused by the partial unique index.
+{"op":"select","revision_id":"$rev_b","authority_ref":"direct_user:owner","retire_current":false,"expect_error":true}
+{"op":"expect","check":"selected_revision","subject":"$acme","horizon":"12m","is":"$rev_a"}
+{"op":"expect","check":"selected_count","subject":"$acme","horizon":"12m","is":1}

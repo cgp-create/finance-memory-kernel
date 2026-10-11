@@ -1,0 +1,13 @@
+# An assistant inference about share count is corrected by a primary filing. The old claim stays, superseded.
+{"op":"subject","as":"acme","key":"ACME","title":"Synthetic issuer ACME","type":"issuer"}
+{"op":"evidence","as":"ev_inf","subject_id":"$acme","source_kind":"assistant_note","source_ref":"synthetic://assistant/ACME/sharecount-estimate","observed_at":"2026-09-20T10:00:00Z","authority_tier":"assistant_inference","payload":{"text":"Diluted share count estimated at 210 million from prior filing plus buyback run-rate"}}
+{"op":"claim","as":"c_inf","subject_id":"$acme","evidence_id":"$ev_inf","aspect":"capital.diluted_shares","kind":"inference","statement":"Diluted share count about 210 million","value":210,"confidence":0.5,"created_at":"2026-09-20T10:01:00Z"}
+{"op":"claim","as":"c_other","subject_id":"$acme","evidence_id":"$ev_inf","aspect":"capital.net_debt","kind":"inference","statement":"Net debt about 300 million","value":300,"confidence":0.5,"created_at":"2026-09-20T10:01:00Z"}
+{"op":"evidence","as":"ev_filing","subject_id":"$acme","source_kind":"regulatory_filing","source_ref":"synthetic://ACME/quarterly-filing-q3","observed_at":"2026-10-02T08:00:00Z","authority_tier":"primary","payload":{"text":"Diluted weighted average shares 198.4 million"}}
+{"op":"correct","as":"c_corr","subject_id":"$acme","old":"$c_inf","evidence_id":"$ev_filing","statement":"Diluted share count is 198.4 million per filing","value":198.4,"confidence":0.95,"created_at":"2026-10-02T08:05:00Z"}
+# Failure state: a social post may not 'correct' a primary-backed claim.
+{"op":"evidence","as":"ev_social","subject_id":"$acme","source_kind":"social_post","source_ref":"synthetic://forum/ACME/shares","observed_at":"2026-10-03T08:00:00Z","authority_tier":"social_chatter","payload":{"text":"share count is actually 150 million"}}
+{"op":"correct","subject_id":"$acme","old":"$c_corr","evidence_id":"$ev_social","statement":"share count 150 million","expect_error":true}
+{"op":"expect","check":"claim_status","claim":"$c_inf","is":"superseded"}
+{"op":"expect","check":"claim_status","claim":"$c_corr","is":"active"}
+{"op":"expect","check":"claim_status","claim":"$c_other","is":"active"}

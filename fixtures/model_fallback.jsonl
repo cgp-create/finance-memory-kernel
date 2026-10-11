@@ -1,0 +1,7 @@
+# A packet produced on a fallback model. The flag must reach the rendered output.
+{"op":"subject","as":"acme","key":"ACME","title":"Synthetic issuer ACME","type":"issuer"}
+{"op":"evidence","as":"ev","subject_id":"$acme","source_kind":"ir_release","source_ref":"synthetic://ACME/outlook","observed_at":"2026-10-01T12:00:00Z","authority_tier":"primary","payload":{"text":"FY revenue guidance 950 to 980"}}
+{"op":"claim","as":"c","subject_id":"$acme","evidence_id":"$ev","aspect":"guidance.fy_revenue","kind":"fact","statement":"FY revenue guidance 950 to 980","confidence":0.9,"created_at":"2026-10-01T12:05:00Z"}
+{"op":"packet","as":"pkt_fb","subject_id":"$acme","query":"What is the FY revenue guidance?","as_of":"2026-10-10T00:00:00Z","runtime":{"model_id":"small-synthetic-model","model_version":"3","provider":"synthetic","route_id":"r2","fallback_used":true,"fallback_reason":"primary model timeout"}}
+{"op":"expect","check":"packet_warning_contains","packet":"$pkt_fb","text":"MODEL FALLBACK IN USE"}
+{"op":"expect","check":"rendered_output_starts_with","packet":"$pkt_fb","text":"[MODEL FALLBACK IN USE: primary model timeout]"}
