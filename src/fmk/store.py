@@ -253,6 +253,14 @@ WHEN NEW.status = 'selected' AND (OLD.status <> 'reviewed' OR NOT EXISTS (
   SELECT 1 FROM receipt r WHERE r.id = NEW.selection_receipt_id
     AND r.kind = 'selection' AND r.object_ref = 'case_set:' || NEW.id))
 BEGIN SELECT RAISE(ABORT, 'invariant 5: selection requires a reviewed revision and a selection receipt'); END;
+-- A claim is retracted only right after a human review receipt that says so.
+CREATE TRIGGER IF NOT EXISTS trg_claim_retract_needs_receipt BEFORE UPDATE OF status ON claim
+WHEN NEW.status = 'retracted' AND OLD.status <> 'retracted' AND NOT EXISTS (
+  SELECT 1 FROM receipt r WHERE r.rowid = (SELECT MAX(rowid) FROM receipt)
+    AND r.kind = 'review' AND r.object_ref = 'claim:' || NEW.id
+    AND json_extract(r.payload, '$.retracted') = 1
+    AND substr(r.authority_ref, 1, instr(r.authority_ref, ':') - 1) IN ('direct_user','reviewer'))
+BEGIN SELECT RAISE(ABORT, 'retraction requires a human review receipt for this claim'); END;
 CREATE TRIGGER IF NOT EXISTS trg_revision_no_delete BEFORE DELETE ON case_set_revision
 BEGIN SELECT RAISE(ABORT, 'revisions are never deleted; retire them'); END;
 
@@ -314,10 +322,33 @@ CREATE TABLE IF NOT EXISTS research_trigger (
   decision_packet TEXT NOT NULL DEFAULT '{}',
   priority INTEGER NOT NULL DEFAULT 3,
   status TEXT NOT NULL DEFAULT 'active',
-  last_evaluated_at TEXT
+  last_evaluated_at TEXT,
+  created_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
 );
 CREATE TRIGGER IF NOT EXISTS trg_trigger_no_delete BEFORE DELETE ON research_trigger
 BEGIN SELECT RAISE(ABORT, 'triggers are never deleted; suppress them'); END;
+CREATE TRIGGER IF NOT EXISTS trg_trigger_frozen BEFORE UPDATE ON research_trigger
+WHEN NEW.subject_id IS NOT OLD.subject_id OR NEW.condition IS NOT OLD.condition
+  OR NEW.created_at IS NOT OLD.created_at OR NEW.recorded_at IS NOT OLD.recorded_at
+BEGIN SELECT RAISE(ABORT, 'a trigger condition and its times are frozen; add a new trigger'); END;
+
+-- every trigger state change, so a packet can be rebuilt with the state it saw
+CREATE TABLE IF NOT EXISTS trigger_state_event (
+  id TEXT PRIMARY KEY,
+  trigger_id TEXT NOT NULL REFERENCES research_trigger(id),
+  state TEXT NOT NULL CHECK (state IN ('green','amber','red','tripped','suppressed')),
+  occurred_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_trigger_event_no_update BEFORE UPDATE ON trigger_state_event
+BEGIN SELECT RAISE(ABORT, 'trigger state events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_trigger_event_no_delete BEFORE DELETE ON trigger_state_event
+BEGIN SELECT RAISE(ABORT, 'trigger state events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trg_trigger_state_logged BEFORE UPDATE OF state ON research_trigger
+WHEN NEW.state IS NOT OLD.state AND NOT EXISTS (
+  SELECT 1 FROM trigger_state_event e WHERE e.trigger_id = NEW.id AND e.state = NEW.state
+    AND e.rowid = (SELECT MAX(rowid) FROM trigger_state_event WHERE trigger_id = NEW.id))
+BEGIN SELECT RAISE(ABORT, 'a trigger state change needs a matching trigger_state_event'); END;
 
 CREATE TABLE IF NOT EXISTS context_packet (
   id TEXT PRIMARY KEY,

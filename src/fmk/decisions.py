@@ -98,7 +98,8 @@ def check_against_mandate(decision_kind: str, proposal: dict, mandate: Mandate, 
                           nav: Optional[float] = None, current_subject_exposure_pct: float = 0.0,
                           asset_class: Optional[str] = None, subject_id: Optional[str] = None,
                           day_notional_before: float = 0.0, snapshot_freshness: str = "none",
-                          held_quantity: Optional[float] = None, held_value: Optional[float] = None) -> dict:
+                          held_quantity: Optional[float] = None, held_value: Optional[float] = None,
+                          pending_notional: float = 0.0) -> dict:
     """Pure function: name every breach of one mandate version. Blocks nothing.
 
     The result also lists which mandate limits this function does not check,
@@ -109,7 +110,8 @@ def check_against_mandate(decision_kind: str, proposal: dict, mandate: Mandate, 
                            "inputs": {"nav": nav, "current_subject_exposure_pct": current_subject_exposure_pct,
                                       "asset_class": asset_class, "day_notional_before": day_notional_before,
                                       "snapshot_freshness": snapshot_freshness,
-                                      "held_quantity": held_quantity, "held_value": held_value}}
+                                      "held_quantity": held_quantity, "held_value": held_value,
+                                      "pending_notional": pending_notional}}
     not_checked = [k for k, default in (("max_sector_exposure_pct", 100.0), ("max_gross_exposure_pct", 100.0),
                                         ("min_cash_pct", 0.0)) if b.get(k, default) != default]
     out["not_checked"] = not_checked
@@ -133,10 +135,21 @@ def check_against_mandate(decision_kind: str, proposal: dict, mandate: Mandate, 
             breaches.append("nav not supplied; position limits cannot be checked")
         else:
             pct = 100.0 * notional / nav
-            if pct > b["max_position_pct"]:
-                breaches.append(f"position {pct:.1f}% > max_position_pct {b['max_position_pct']}%")
-            if current_subject_exposure_pct + pct > b["max_subject_exposure_pct"]:
-                breaches.append(f"subject exposure {current_subject_exposure_pct + pct:.1f}% > "
+            pending_pct = 100.0 * pending_notional / nav
+            if b.get("max_order_pct") is not None and pct > b["max_order_pct"]:
+                breaches.append(f"order {pct:.1f}% of NAV > max_order_pct {b['max_order_pct']}%")
+            if held_value is None:
+                breaches.append("current position not established: cite a position-grade snapshot with a mark "
+                                "(quantity 0 for a new position)")
+            else:
+                held_pct = 100.0 * held_value / nav
+                post = held_pct + pending_pct + pct
+                if post > b["max_position_pct"]:
+                    breaches.append(f"post-trade position {post:.1f}% (held {held_pct:.1f}% + pending "
+                                    f"{pending_pct:.1f}% + order {pct:.1f}%) > max_position_pct {b['max_position_pct']}%")
+            subj = current_subject_exposure_pct + pending_pct + pct
+            if subj > b["max_subject_exposure_pct"]:
+                breaches.append(f"subject exposure {subj:.1f}% > "
                                 f"max_subject_exposure_pct {b['max_subject_exposure_pct']}%")
         if subject_id and subject_id in b["blocked_subjects"]:
             breaches.append(f"subject {subject_id} is blocked")
@@ -258,6 +271,43 @@ def _snapshot_freshness(store: Store, scope_ref: str, subject_id: Optional[str],
 # ------------------------------------------------------------------ decisions
 
 
+def _held(store: Store, snapshot_ids: list[str], now: str) -> tuple[Optional[float], Optional[float], Optional[str]]:
+    """Quantity, absolute value and as_of of the best cited position-grade snapshot."""
+    grade = [store.get("position_snapshot", sid) for sid in snapshot_ids]
+    grade = [g for g in grade if g.source_class in POSITION_GRADE and g.as_of <= now]
+    if not grade:
+        return None, None, None
+    best = max(grade, key=lambda g: (SOURCE_CLASS_RANK[g.source_class], g.as_of))
+    q = best.quantity
+    if q is None:
+        return None, None, best.as_of
+    if q == 0:
+        return q, 0.0, best.as_of
+    return q, (abs(q * best.mark_price) if best.mark_price else None), best.as_of
+
+
+def _pending_notional(store: Store, scope_ref: str, subject_id: Optional[str], since: Optional[str],
+                      exclude: str = "") -> float:
+    """Exposure-increasing commitments the cited snapshot cannot show yet:
+    decisions approved and not executed, plus executions after the snapshot.
+    Pending sells are not netted off; until they fill they reduce nothing."""
+    if subject_id is None:
+        return 0.0
+    rows = store.raw(
+        "SELECT d.proposal, d.status, r.occurred_at FROM decision_record d "
+        "LEFT JOIN receipt r ON r.id = d.execution_receipt_id "
+        "WHERE d.scope_ref = ? AND d.subject_id = ? AND d.status IN ('approved','executed') AND d.id <> ?",
+        (scope_ref, subject_id, exclude))
+    total = 0.0
+    for proposal, status, executed_at in rows:
+        p = json.loads(proposal)
+        if p.get("direction") not in INCREASING:
+            continue
+        if status == "approved" or since is None or (executed_at and executed_at > since):
+            total += float(p.get("notional") or 0)
+    return total
+
+
 def propose_decision(store: Store, scope_ref: str, decision_kind: str, intent_rung: str, proposal: dict,
                      rationale_text: str, *, proposed_by: str = "model:assistant",
                      subject_id: Optional[str] = None, nav: Optional[float] = None,
@@ -297,20 +347,17 @@ def propose_decision(store: Store, scope_ref: str, decision_kind: str, intent_ru
     now = store.clock()
     snaps = list(position_snapshot_ids or [])
     freshness = _snapshot_freshness(store, scope_ref, subject_id, snaps, now, mandate)
-    held_q = held_v = None
-    grade = [store.get("position_snapshot", sid) for sid in snaps]
-    grade = [g for g in grade if g.source_class in POSITION_GRADE and g.as_of <= now]
-    if grade:
-        best = max(grade, key=lambda g: (SOURCE_CLASS_RANK[g.source_class], g.as_of))
-        held_q = best.quantity
-        held_v = abs(best.quantity * best.mark_price) if best.quantity is not None and best.mark_price else None
+    held_q, held_v, held_as_of = _held(store, snaps, now)
+    pending = _pending_notional(store, scope_ref, subject_id, held_as_of)
     day_before = _day_notional(store, scope_ref, now[:10])
     check = check_against_mandate(decision_kind, proposal, mandate, nav=nav,
                                   current_subject_exposure_pct=current_subject_exposure_pct,
                                   asset_class=asset_class, subject_id=subject_id,
                                   day_notional_before=day_before, snapshot_freshness=freshness,
-                                  held_quantity=held_q, held_value=held_v)
+                                  held_quantity=held_q, held_value=held_v, pending_notional=pending)
     check["inputs_supplied_by"] = proposed_by
+    check["kernel_computed"] = ["held_quantity", "held_value", "pending_notional", "snapshot_freshness",
+                                "day_notional_before"]
     rec = DecisionRecord(
         id=store.new_id("dec"), scope_ref=scope_ref, subject_id=subject_id, decision_kind=decision_kind,
         intent_ref=intent_ref, intent_rung=intent_rung, proposal=dict(proposal), rationale_text=rationale_text,
@@ -336,13 +383,19 @@ def _day_notional(store: Store, scope_ref: str, day: str, exclude: str = "") -> 
 
 
 def approve_decision(store: Store, decision_id: str, authority_ref: str,
-                     override: Optional[dict] = None) -> str:
+                     override: Optional[dict] = None, nav: Optional[float] = None) -> str:
     """A human other than the proposer approves.
 
-    The check is run again at approval, against the mandate active now and
-    the day's notional approved so far, inside the write lock, so a set of
-    proposals that each passed cannot together breach a daily cap. A failed
-    check needs an override with a reason that names every breach."""
+    Approval is a new calculation against the state now, inside the write
+    lock. For a trade it refuses, and asks for a new proposal, when the
+    proposal is older than the mandate's proposal_ttl_seconds, when a newer
+    position-grade snapshot of the subject has arrived since the ones cited,
+    or when a NAV restated at approval differs from the proposal's by more
+    than nav_tolerance_pct. It then rechecks the mandate with freshness,
+    pending commitments and the day's approved notional as of now, so a set
+    of proposals that each passed cannot together breach a cap. A failed
+    check needs an override with a reason that names every breach. NAV is
+    still the caller's number; the receipt records which NAV was used."""
     authority.require_human(authority_ref, "invariant 15: approval")
     d = get_decision(store, decision_id)
     authority.require_distinct(authority_ref, d.proposed_by, "invariant 15: approval")
@@ -353,12 +406,42 @@ def approve_decision(store: Store, decision_id: str, authority_ref: str,
         if m is None or m.id != d.mandate_id:
             raise InvariantViolation("the mandate this decision was checked against is no longer active; propose again")
         i = d.mandate_check.get("inputs", {})
-        check = check_against_mandate(d.decision_kind, d.proposal, m, nav=i.get("nav"),
+        now = store.clock()
+        basis: dict[str, Any] = {"nav_proposed": i.get("nav"), "nav_restated": nav,
+                                 "snapshot_ids": list(d.position_snapshot_ids)}
+        use_nav = i.get("nav")
+        freshness, held_q, held_v, pending = (d.snapshot_freshness, i.get("held_quantity"),
+                                              i.get("held_value"), i.get("pending_notional", 0.0))
+        if d.decision_kind in EXECUTABLE_DECISION_KINDS:
+            ttl = m.body.get("proposal_ttl_seconds")
+            age = (parse_ts(now) - parse_ts(d.proposed_at)).total_seconds()
+            if ttl is not None and age > ttl:
+                raise InvariantViolation(f"proposal is {age:.0f}s old, past proposal_ttl_seconds {ttl}; propose again")
+            if d.subject_id:
+                cited = [store.get("position_snapshot", sid).as_of for sid in d.position_snapshot_ids]
+                newer = store.raw(
+                    "SELECT id, as_of FROM position_snapshot WHERE scope_ref = ? AND subject_id = ? "
+                    "AND source_class IN (%s) AND as_of <= ? AND as_of > ? ORDER BY as_of DESC"
+                    % ",".join("?" for _ in POSITION_GRADE),
+                    (d.scope_ref, d.subject_id, *sorted(POSITION_GRADE), now, max(cited) if cited else ""))
+                if newer:
+                    raise InvariantViolation(f"account state changed since the proposal: snapshot {newer[0][0]} "
+                                             f"at {newer[0][1]} is newer than those cited; propose again")
+            if nav is not None:
+                if not use_nav or abs(nav - use_nav) / use_nav * 100.0 > m.body.get("nav_tolerance_pct", 1.0):
+                    raise InvariantViolation(f"NAV {nav:g} at approval differs from {use_nav} at proposal by more "
+                                             f"than nav_tolerance_pct; propose again")
+                use_nav = nav
+            freshness = _snapshot_freshness(store, d.scope_ref, d.subject_id, list(d.position_snapshot_ids), now, m)
+            held_q, held_v, held_as_of = _held(store, list(d.position_snapshot_ids), now)
+            pending = _pending_notional(store, d.scope_ref, d.subject_id, held_as_of, exclude=d.id)
+        check = check_against_mandate(d.decision_kind, d.proposal, m, nav=use_nav,
                                       current_subject_exposure_pct=i.get("current_subject_exposure_pct", 0.0),
                                       asset_class=i.get("asset_class"), subject_id=d.subject_id,
-                                      day_notional_before=_day_notional(store, d.scope_ref, store.clock()[:10], d.id),
-                                      snapshot_freshness=d.snapshot_freshness,
-                                      held_quantity=i.get("held_quantity"), held_value=i.get("held_value"))
+                                      day_notional_before=_day_notional(store, d.scope_ref, now[:10], d.id),
+                                      snapshot_freshness=freshness,
+                                      held_quantity=held_q, held_value=held_v, pending_notional=pending)
+        check["state_basis"] = basis
         if check["status"] == "fail":
             breaches = set(check["breaches"])
             overridden = set((override or {}).get("overrides_breaches", []))

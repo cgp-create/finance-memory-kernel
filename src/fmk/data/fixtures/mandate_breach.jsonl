@@ -1,8 +1,9 @@
-# Proposal at 12 percent of NAV against a 10 percent cap. The breach is recorded; approval needs an override.
+# 9 percent of NAV already held, a 3 percent add, against a 10 percent position cap. The order alone is under the cap; the position after it is not. The breach is recorded; approval needs an override.
 {"op":"subject","as":"a","key":"SUBJ_A","title":"Synthetic security A","type":"security"}
 {"op":"mandate","as":"m1","scope_ref":"scope_demo","body":{"objective_text":"growth sleeve","horizon":"12m","allowed_asset_classes":["equity"],"allowed_venues":["venue_a"],"max_position_pct":10.0,"max_subject_exposure_pct":15.0,"per_trade_notional_cap":50000}}
 {"op":"activate_mandate","mandate_id":"$m1","authority_ref":"direct_user:owner"}
-{"op":"decision","as":"d1","scope_ref":"scope_demo","subject_id":"$a","decision_kind":"trade","intent_rung":"action","proposal":{"direction":"buy","notional":12000,"venue":"venue_a"},"rationale_text":"deliberate concentration into highest conviction name","nav":100000,"venue":"venue_a","asset_class":"equity"}
+{"op":"snapshot","as":"s1","scope_ref":"scope_demo","subject_id":"$a","as_of":"2026-10-09T23:30:00Z","source_class":"broker_position","quantity":90,"mark_price":100.0,"mark_as_of":"2026-10-09T23:30:00Z","mark_source_class":"broker_position","source_ref":"synthetic://broker/positions"}
+{"op":"decision","as":"d1","scope_ref":"scope_demo","subject_id":"$a","decision_kind":"trade","intent_rung":"action","proposal":{"direction":"buy","notional":3000,"venue":"venue_a"},"rationale_text":"deliberate concentration into highest conviction name","nav":100000,"venue":"venue_a","asset_class":"equity","position_snapshot_ids":["$s1"]}
 {"op":"approve","decision_id":"$d1","authority_ref":"direct_user:owner","expect_error":true}
 {"op":"expect","check":"mandate_check_status","decision":"$d1","is":"fail"}
 {"op":"expect","check":"mandate_check_breach_contains","decision":"$d1","text":"max_position_pct"}

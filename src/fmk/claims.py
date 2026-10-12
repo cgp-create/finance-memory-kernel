@@ -341,12 +341,28 @@ def resolve_contradiction(store: Store, winner_id: str, loser_id: str, authority
 
 
 def retract(store: Store, claim_id: str, authority_ref: str, rationale_evidence_id: str) -> list[str]:
-    """Retraction needs evidence and a named authority; the row stays and a
-    review receipt records when. Returns the dependent claims marked stale."""
+    """Take a claim out of active use. Returns the dependent claims marked stale.
+
+    Retraction removes a claim from every later packet, so it is held to more
+    than a contradiction: a human authority (direct_user or reviewer), evidence
+    about the same subject, and evidence at least as strong as the claim's own
+    source. Weaker evidence can contradict a claim but cannot retract it. The
+    row stays, and the review receipt dates the change so replay before it
+    still shows the claim as it was."""
+    from . import authority
     from .receipts import add_receipt
 
-    if not store.exists("evidence", rationale_evidence_id):
+    authority.require_human(authority_ref, "retraction")
+    claim = get_claim(store, claim_id)
+    ev = store.try_get("evidence", rationale_evidence_id)
+    if ev is None:
         raise InvariantViolation("retraction requires evidence")
+    if ev.subject_id != claim.subject_id:
+        raise InvariantViolation("retraction evidence belongs to a different subject")
+    if AUTHORITY_RANK[ev.authority_tier] < AUTHORITY_RANK[claim.source_strength]:
+        raise InvariantViolation(
+            f"'{ev.authority_tier}' evidence cannot retract a '{claim.source_strength}' claim; "
+            "record a contradiction instead")
     with store.transaction():
         add_receipt(store, "review", f"claim:{claim_id}", authority_ref,
                     {"retracted": True, "evidence_id": rationale_evidence_id})

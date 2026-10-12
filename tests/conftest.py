@@ -60,6 +60,17 @@ def mandate_body(**kw):
     return MandateBody(**base)
 
 
+def flat_snapshot(store, scope_ref, subject_id):
+    """A position-grade snapshot showing no holding, reused within a store, so
+    test proposals cite a known current position as v0.3 requires."""
+    rows = store.raw("SELECT id FROM position_snapshot WHERE scope_ref=? AND subject_id=? AND source_ref='flat'",
+                     (scope_ref, subject_id))
+    if rows:
+        return rows[0][0]
+    return decisions.add_snapshot(store, scope_ref, subject_id, store.clock(), "broker_position",
+                                  quantity=0, source_ref="flat")
+
+
 @pytest.fixture
 def dstore():
     """Decision-layer store: active mandate on scope_test and a few subjects."""

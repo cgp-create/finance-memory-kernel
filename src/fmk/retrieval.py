@@ -32,6 +32,7 @@ from .models import (
     norm_ts,
 )
 from .claims import claim_status_at, stale_dependencies
+from .underwriting import trigger_state_at
 from .policy import POLICY_VERSION, FreshnessPolicy
 from .store import Store
 
@@ -127,10 +128,12 @@ def generate_candidates(store: Store, subject_id: str, query: str, as_of: str,
                              lexical=lex(inv.condition), authority=AUTHORITY_RANK["system_measurement"],
                              as_of=inv.created_at, status=inv.status, hash=content_hash(inv.condition),
                              why=[f"invalidation, status {inv.status}"]))
-    for trg in store.query("research_trigger", "subject_id = ? AND status = 'active'", (subject_id,)):
+    for trg in store.query("research_trigger", "subject_id = ? AND status = 'active' AND created_at <= ? "
+                           "AND recorded_at <= ?", (subject_id, as_of_n, known)):
+        state = trigger_state_at(store, trg.id, known_as_of and known)
         out.append(Candidate(ref=f"trigger:{trg.id}", kind="trigger", lane="trigger", lexical=lex(trg.condition),
-                             authority=AUTHORITY_RANK["system_measurement"], as_of=as_of_n or "", status=trg.state,
-                             hash=content_hash(trg.condition), why=[f"trigger state {trg.state}"]))
+                             authority=AUTHORITY_RANK["system_measurement"], as_of=trg.created_at, status=state,
+                             hash=content_hash(trg.condition), why=[f"trigger state {state}"]))
     for rev in store.query("case_set_revision", "subject_id = ? AND created_at <= ? AND recorded_at <= ?",
                            (subject_id, as_of_n, known), "created_at"):
         rev.status = _revision_status_at(store, rev, known_as_of and known)
@@ -317,7 +320,7 @@ def build_packet(store: Store, subject_id: str, query: str, as_of: str, runtime:
         warnings.append(f"MODEL FALLBACK IN USE: {rt.get('fallback_reason', 'unspecified')}")
     subj = store.get("subject", subject_id)
     task = {"kind": task_kind, "subject": subj.key, "query": query}
-    selected = [{"ref": c.ref, "why": "; ".join(c.why), "as_of": c.as_of, "hash": c.hash,
+    selected = [{"ref": c.ref, "why": "; ".join(c.why), "as_of": c.as_of, "hash": c.hash, "status": c.status,
                  **({"freshness": c.extra["freshness"]} if "freshness" in c.extra else {})} for c in chosen]
     explanations = [{"ref": c.ref, "lane": c.lane, "authority": c.authority, "lexical": round(c.lexical, 4)} for c in chosen]
     omitted_sorted = sorted(omitted, key=lambda o: (o["ref"], o["why"]))
@@ -360,19 +363,26 @@ def render_output(pkt: ContextPacket, body_text: str) -> str:
 
 
 def summarize(store: Store, pkt: ContextPacket) -> str:
-    """Plain text summary of a packet. Pure read."""
+    """Plain text summary of a packet. Pure read.
+
+    Statuses are the ones the packet recorded when it was built, so a saved
+    packet reads the same after later retractions or supersessions. The text
+    shown (statements, theses, questions) is frozen by the schema. Packets
+    from before v0.3 did not record status; for those the current status is
+    shown and marked as such."""
     parts = []
     for s in pkt.selected:
         obj = store.get_ref(s["ref"])
         kind = s["ref"].split(":")[0]
+        status = s["status"] if "status" in s else f"{obj.status}, current"
         if kind == "claim":
-            parts.append(f"- {obj.statement} [{obj.status}{', ' + s['freshness'] if 'freshness' in s else ''}]")
+            parts.append(f"- {obj.statement} [{status}{', ' + s['freshness'] if 'freshness' in s else ''}]")
         elif kind == "evidence":
             parts.append(f"- evidence {obj.source_kind} ({obj.authority_tier}) {obj.observed_at}")
         elif kind == "case_set":
-            parts.append(f"- {obj.status} revision {obj.id}: {obj.thesis_summary}")
+            parts.append(f"- {status} revision {obj.id}: {obj.thesis_summary}")
         elif kind == "question":
-            parts.append(f"- open question: {obj.question}")
+            parts.append(f"- question [{status}]: {obj.question}")
         else:
             parts.append(f"- {s['ref']}: {s['why']}")
     return "\n".join(parts)

@@ -1,6 +1,6 @@
 # Finance Memory Kernel: Specification
 
-**Version:** 0.2, frozen
+**Version:** 0.3, frozen
 **As of:** 2026-10-11
 **Scope:** a durable research and decision record for an agent that acts on one investor's money over time. It does not manage portfolios or execute orders.
 
@@ -96,7 +96,7 @@ decision_record    id, scope_ref, subject_id?, decision_kind, intent_ref?, inten
                    reconcile_receipt_id?, superseded_by_id?, idempotency_key?
 ```
 
-Mandate body fields: `objective_text`, `horizon`, `allowed_asset_classes`, `allowed_venues`, `blocked_subjects`, `max_position_pct`, `max_subject_exposure_pct`, `max_sector_exposure_pct`, `max_gross_exposure_pct`, `min_cash_pct`, `per_trade_notional_cap`, `daily_notional_cap`, `funding_rule_text`, `min_net_edge_bps`, `max_slippage_bps`, `approval_ttl_seconds`, `freshness_seconds{source_class: seconds, mark: seconds}`.
+Mandate body fields: `objective_text`, `horizon`, `allowed_asset_classes`, `allowed_venues`, `blocked_subjects`, `max_position_pct` (post-trade position: held + pending + order), `max_subject_exposure_pct`, `max_order_pct`, `max_sector_exposure_pct`, `max_gross_exposure_pct`, `min_cash_pct`, `per_trade_notional_cap`, `daily_notional_cap`, `funding_rule_text`, `min_net_edge_bps`, `max_slippage_bps`, `approval_ttl_seconds`, `proposal_ttl_seconds`, `nav_tolerance_pct`, `freshness_seconds{source_class: seconds, mark: seconds}`.
 
 A decision proposal may carry `direction` (buy, short, sell, cover, reduce, close), `notional`, `quantity`, `venue`, `expected_price` or `limit_price`, `expected_edge_bps`, `estimated_cost_bps`.
 
@@ -117,7 +117,7 @@ intent_rung:     quick_take | ticker_brief | portfolio_fit | deep_dive | formal_
 
 ### 4.2 Time
 
-Three times matter and are kept apart. `observed_at` on evidence (and `valid_from` on a claim, when given) is when something was true of the world. `created_at` on a claim is when it was asserted, and may be supplied by the caller. `ingested_at` on evidence and `recorded_at` on claims, revisions, questions and invalidations are set from the store clock and cannot be supplied. Freshness runs from observation. A packet's `as_of` cuts by valid time. Its optional `known_as_of` also cuts by recording time and rebuilds statuses as they were then: a claim's superseded, retracted, contradicted (until resolved) and stale states from relation and receipt times, and a revision's draft, reviewed, selected or retired state from its receipt and selection times. Question, invalidation and trigger states are shown as they are now. Two events at the same timestamp are treated as simultaneous.
+Three times matter and are kept apart. `observed_at` on evidence (and `valid_from` on a claim, when given) is when something was true of the world. `created_at` on a claim is when it was asserted, and may be supplied by the caller. `ingested_at` on evidence and `recorded_at` on claims, revisions, questions and invalidations are set from the store clock and cannot be supplied. Freshness runs from observation. A packet's `as_of` cuts by valid time. Its optional `known_as_of` also cuts by recording time and rebuilds statuses as they were then: a claim's superseded, retracted, contradicted (until resolved) and stale states from relation and receipt times, and a revision's draft, reviewed, selected or retired state from its receipt and selection times. A trigger's state is rebuilt from its append-only state events, and a trigger created after either cut is left out. Question and invalidation states are shown as they are now. A stored packet records the status of each object it selected, and `summarize` renders that status, so a saved packet keeps its meaning after later changes. Two events at the same timestamp are treated as simultaneous.
 
 ## 5. Invariants, and where each is enforced
 
@@ -130,14 +130,14 @@ S = SQLite schema (holds for any SQL through the connection). P = Python API onl
 5. **Review and selection are human, and the author does not review their own draft.** S: `reviewed` needs a human review receipt; `selected` needs a reviewed revision and a selection receipt, and selection receipts must name a human. P: reviewer differs from `proposed_by`.
 6. **Receipts are distinct, append-only and chained.** S: kind enum, no update or delete, each must link to the current chain head (no forks) and be dated no earlier than it, with the time taken from the store clock, human-only kinds, `venue`/`system`-only kinds, authority format. This part detects tampering after the fact and cannot prevent it: `verify_chain()` recomputes payload hashes and links and compares the head with one stored elsewhere.
 7. **Packets are replayable.** S: immutable, runtime required. P: the hash covers ids, object hashes, both time cuts, policy version and runtime.
-8. **Supersession is scoped and one-way.** S: superseded and retracted claims cannot return. P: same subject and aspect; the new claim's authority must be at least the old one's, or it is a contradiction.
+8. **Supersession is scoped and one-way.** S: superseded and retracted claims cannot return; retraction needs a human review receipt immediately before it. P: same subject and aspect; the new claim's authority must be at least the old one's, or it is a contradiction. Retraction needs a human, evidence about the same subject, and evidence at least as strong as the claim's source; weaker evidence contradicts.
 9. **Contradictions stay open until a human resolves them.** P: both sides are kept in every packet regardless of budget, without changing their authority; resolution needs a human authority and evidence.
 10. **Time-sensitive facts expire or degrade, from when they were observed.** S: expiry is frozen with the claim. P: packets label each claim fresh, degraded or expired and warn.
 11. **Returns declare basis and anchor.** S: CHECK constraints.
 12. **Fixtures include failure states.** T.
 13. **One active mandate per scope, activated by the investor.** S: partial unique index; inserted as draft; draft -> active -> retired; activation needs a `direct_user` receipt; body frozen; no deletes.
 14. **A plan is never a position.** P: `current_position` withholds quantity unless the best snapshot is position-grade, ignores snapshots after `now`, prefers fresh over stale, and warns when a newer snapshot disagrees.
-15. **Decisions move forward by receipt, and the approver is not the proposer.** S: inserted as `proposed` with no receipt links; body frozen; links write-once; one step at a time; approval receipt must be human and from a different person than the proposer; rejection, expiry and supersession each need a receipt saying so; only `trade`, `rebalance` and `close` can be executed; reconcile needs an executed decision and a reconcile receipt. P: the mandate check is rerun at approval inside the write lock, against the mandate active then and the day's approved notional; approvals expire after `approval_ttl_seconds`; models cannot expire decisions.
+15. **Decisions move forward by receipt, and the approver is not the proposer.** S: inserted as `proposed` with no receipt links; body frozen; links write-once; one step at a time; approval receipt must be human and from a different person than the proposer; rejection, expiry and supersession each need a receipt saying so; only `trade`, `rebalance` and `close` can be executed; reconcile needs an executed decision and a reconcile receipt. P: approval of a trade is refused past `proposal_ttl_seconds`, after a newer position-grade snapshot of the subject, or on a restated NAV outside `nav_tolerance_pct`; otherwise the mandate check is rerun inside the write lock against the mandate active then, snapshot freshness, pending commitments and the day's approved notional as of approval; approvals expire after `approval_ttl_seconds`; models cannot expire decisions.
 16. **Every decision is checked by the kernel against the active mandate of its scope.** S: the cited mandate must be active and of the same scope, and the stored check must name it. P: `propose_decision` computes the check; there is no parameter for passing one in. A raw INSERT can still store a fabricated check that names the right mandate. A failed check can be approved only with an override that names every breach and gives a reason.
 17. **Every packet carries its runtime.** S: CHECK on `runtime`. P: `fallback_used` is printed in the rendered output.
 18. **Claims that rest on a changed claim go stale.** P: superseding or retracting a claim marks its transitive `depends_on` dependents stale in the same transaction, each with a `system:kernel` receipt; packets warn on any claim whose basis changed after it was last reaffirmed; reaffirming re-points the claim at the successors of the changed bases; a winner of a resolved contradiction whose basis changed comes back stale. Cycles are refused. S: a stale claim returns to active only when the latest receipt on it is a human reaffirmation.
@@ -238,7 +238,7 @@ See README.md for the layout. Standard library and SQLite only.
 
 ## 11. Tests
 
-`python -m pytest` runs 121 tests. The numbered scenarios below are referenced from test docstrings. `tests/test_hardening.py` adds attempts to break the record, mostly through raw SQL, each of which must be refused or detected.
+`python -m pytest` runs 138 tests. The numbered scenarios below are referenced from test docstrings. `tests/test_hardening.py` adds attempts to break the record, mostly through raw SQL, each of which must be refused or detected.
 
 1. **Correction supersession:** a primary correction replaces an older inference for the same subject and aspect without deleting history, and claims resting on the old one go stale.
 2. **Conflict preservation:** two credible, incompatible claims stay visible until a human resolves them.
@@ -253,7 +253,7 @@ See README.md for the layout. Standard library and SQLite only.
 11. **Single active mandate:** a second activation for a scope fails until the first is retired.
 12. **Plan is not position:** with only `plan` snapshots, holdings come back as a warning with no quantity.
 13. **Forward-only decisions:** `proposed -> executed` without approval is refused, and so is any backward move, through the API or raw SQL.
-14. **Mandate breach recorded:** a proposal over `max_position_pct` stores a failed check naming the breach; approval without a reasoned override naming it is refused.
+14. **Mandate breach recorded:** a proposal that would take the position over `max_position_pct`, counting what is held and pending, stores a failed check naming the breach; approval without a reasoned override naming it is refused.
 15. **No-trade is a record:** a `no_trade` with a rationale can be written, queried, acknowledged and paired with an outcome, and cannot be executed.
 16. **Runtime required:** a packet without `runtime.model_id` is refused; a fallback appears in the rendered output.
 17. **Stale mark, fresh position:** a snapshot with a current `as_of` and an old `mark_as_of` is served with a warning.
@@ -263,7 +263,7 @@ Fixture replay is deterministic: two loads of a fixture give identical rows, has
 ## 12. Decision layer notes
 
 - A `no_trade` or `hold` is a first-class record with a rationale and the evidence considered. It can be acknowledged by approval but not executed. Its outcome can be attached later, which makes restraint gradable.
-- The mandate check is computed at proposal time and again at approval. It records its inputs (NAV, current subject exposure, asset class, the day's approved notional, snapshot freshness, the cited holding), who supplied them, and which mandate limits it did not check. Direction matters: selling or covering does not count as adding exposure, and a blocked subject can still be sold. A sell must cite a position-grade holding and cannot exceed its value, and a cover must cite a short, so a mislabelled direction shows up as a breach.
+- The mandate check is computed at proposal time and again at approval. It records its inputs (NAV, current subject exposure, asset class, the day's approved notional, snapshot freshness, the cited holding, pending commitments), who supplied them, which the kernel computed, and which mandate limits it did not check. Direction matters: selling or covering does not count as adding exposure, and a blocked subject can still be sold. A sell must cite a position-grade holding and cannot exceed its value, and a cover must cite a short, so a mislabelled direction shows up as a breach.
 - Snapshot freshness on a decision is computed from the cited snapshots against the mandate's policy. Stale or mixed snapshots on an executable decision are a breach. A buy that cites no snapshot is recorded with freshness `none`, so the current-exposure input is then the caller's word alone.
 - `intent_rung` is stored as the caller classified it, so misclassifications are visible later.
 - The kernel treats a decision as approved only when an approval receipt exists. A "yes" in chat that never became one leaves the decision `proposed`.

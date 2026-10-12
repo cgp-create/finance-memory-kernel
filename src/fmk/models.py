@@ -329,6 +329,8 @@ class Trigger(Record):
     priority: int
     status: str
     last_evaluated_at: Optional[str]
+    created_at: str = ""
+    recorded_at: str = ""
 
 
 @dataclass
@@ -386,8 +388,11 @@ class MandateBody:
     allowed_asset_classes: list = field(default_factory=list)
     allowed_venues: list = field(default_factory=list)
     blocked_subjects: list = field(default_factory=list)
+    # post-trade position in the subject: held + pending commitments + this order
     max_position_pct: float = 100.0
     max_subject_exposure_pct: float = 100.0
+    # optional cap on a single order as a percent of NAV
+    max_order_pct: Optional[float] = None
     max_sector_exposure_pct: float = 100.0
     max_gross_exposure_pct: float = 100.0
     min_cash_pct: float = 0.0
@@ -400,6 +405,10 @@ class MandateBody:
     max_slippage_bps: Optional[float] = None
     # an approval lapses if it is not executed within this many seconds
     approval_ttl_seconds: Optional[int] = 86400
+    # a proposal can be approved only within this many seconds of being made
+    proposal_ttl_seconds: Optional[int] = 3600
+    # NAV restated at approval may differ from the proposal's by at most this much
+    nav_tolerance_pct: float = 1.0
     # freshness policy in seconds by snapshot source class; 0 means never fresh
     freshness_seconds: dict = field(
         default_factory=lambda: {

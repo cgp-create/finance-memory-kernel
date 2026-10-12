@@ -20,7 +20,7 @@ Judgement calls made while building this, and the reasons for them. None of them
 
 9. **Authority before similarity.** Rank is authority, then lexical overlap. On a factual query (task kind `factual_state` or `research_update`, and no sentiment words), social chatter is left out whenever primary or system evidence is present. On a sentiment query it stays, ranked after primary.
 
-10. **Two time cuts.** `as_of` cuts by valid time. `known_as_of` also cuts by the recording times the store sets itself (`ingested_at`, `recorded_at`, relation `created_at`, receipt `occurred_at`, which callers cannot set and the schema keeps in order) and rebuilds claim and revision statuses from those times. Retractions write a receipt so that they can be dated. Question, invalidation and trigger states are not rebuilt.
+10. **Two time cuts.** `as_of` cuts by valid time. `known_as_of` also cuts by the recording times the store sets itself (`ingested_at`, `recorded_at`, relation `created_at`, receipt `occurred_at`, which callers cannot set and the schema keeps in order) and rebuilds claim and revision statuses from those times. Retractions write a receipt so that they can be dated. Trigger states are rebuilt from append-only state events (from 0.3). Question and invalidation states are not rebuilt.
 
 11. **What the packet hash covers.** Both time cuts, policy version, task, query hash, selected refs with their object hashes, omissions, sorted warnings and the runtime block. Not the packet id or `created_at`, so a rebuild against the same data gives the same hash under a new id. Changing the model changes the hash.
 
@@ -51,3 +51,13 @@ Judgement calls made while building this, and the reasons for them. None of them
 24. **Reaffirming re-points the dependency.** When a human reaffirms a stale claim, it gets a `depends_on` edge to the current successor of each basis that changed. The old edges stay for history; changes older than the reaffirmation no longer warn.
 
 25. **Receipts vouch for rows.** Approval and execution receipts store the proposal's hash, activation the mandate body's, selection the revision's assumptions and evidence hashes, reconcile the snapshot's. `verify_chain` checks them, so a proposal edited after approval is detected even if the triggers were dropped.
+
+## Fixed in 0.3, after outside review
+
+26. **The position limit was a per-order limit.** 0.2 compared the order alone with `max_position_pct`, so 9% held plus a 9% add passed a 10% cap whenever the subject cap was loose. The check now adds the held value from the cited position-grade snapshot and pending commitments: decisions approved and not filled, and fills after the snapshot. Pending sells are not netted; they reduce nothing until they fill. A buy with no position-grade snapshot, or one without a mark, fails, since zero cannot be assumed. `max_order_pct` is the separate per-order cap.
+
+27. **Approval reused proposal-time state.** 0.2 reran the mandate check at approval with the NAV, exposure and holding from the proposal. Approval now refuses a trade past `proposal_ttl_seconds` (default one hour), after a newer position-grade snapshot of the subject, or when a NAV restated at approval differs by more than `nav_tolerance_pct`; it recomputes freshness and pending commitments as of approval, and the receipt records the NAV used. The refusal asks for a new proposal; the old record is not edited. NAV and subject exposure are still the caller's numbers.
+
+28. **Replay could see the future.** Triggers had no creation time, so a trigger made later appeared in packets cut earlier, and trigger state was read as of now. Triggers now carry `created_at` and `recorded_at`, frozen by the schema, and each state change writes an append-only event that the schema requires. Saved packets showed the current status of what they selected; they now store the status at build time and render it.
+
+29. **Retraction had no authority rule.** 0.2 wrote a receipt but accepted any authority and any evidence, including a model citing chatter about another subject. Retraction now needs a human, same-subject evidence and evidence at least as strong as the claim's source, and the schema refuses the status change without a human review receipt immediately before it.

@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from conftest import RUNTIME, cases_for, mandate_body
+from conftest import RUNTIME, cases_for, flat_snapshot, mandate_body
 from fmk import claims, decisions, evidence, receipts, retrieval, underwriting
 from fmk.fixtures import fixed_clock
 from fmk.models import DecisionRecord, InvariantViolation, Mandate
@@ -25,6 +25,7 @@ def _decision_store(clock="2026-10-10T12:00:00Z"):
 
 
 def _propose(s, notional=1_000, proposed_by="model:assistant", **kw):
+    kw.setdefault("position_snapshot_ids", [flat_snapshot(s, "scope_h", "SUBJ_A")])
     return decisions.propose_decision(s, "scope_h", "trade", "action",
                                       {"direction": "buy", "notional": notional, "venue": "venue_a"}, "r",
                                       subject_id="SUBJ_A", nav=100_000, asset_class="equity",
@@ -319,7 +320,8 @@ def test_chain_verifies_and_detects_a_rewrite(tmp_path):
     decisions.activate_mandate(s, mid, "direct_user:owner")
     did = decisions.propose_decision(s, "scope_h", "trade", "action",
                                      {"direction": "buy", "notional": 1_000, "venue": "venue_a"}, "r",
-                                     subject_id="SUBJ_A", nav=100_000, asset_class="equity")
+                                     subject_id="SUBJ_A", nav=100_000, asset_class="equity",
+                                     position_snapshot_ids=[flat_snapshot(s, "scope_h", "SUBJ_A")])
     rid = decisions.approve_decision(s, did, "direct_user:owner")
     head = receipts.chain_head(s)
     assert receipts.verify_chain(s, head) == []
@@ -412,7 +414,8 @@ def test_daily_cap_is_rechecked_at_approval():
     decisions.activate_mandate(s, mid, "direct_user:owner")
     ids = [decisions.propose_decision(s, "scope_c", "trade", "action",
                                       {"direction": "buy", "notional": 30_000, "venue": "venue_a"}, "r",
-                                      subject_id="SUBJ_A", nav=1_000_000, asset_class="equity") for _ in range(3)]
+                                      subject_id="SUBJ_A", nav=1_000_000, asset_class="equity",
+                                      position_snapshot_ids=[flat_snapshot(s, "scope_c", "SUBJ_A")]) for _ in range(3)]
     assert all(decisions.get_decision(s, i).mandate_check["status"] == "pass" for i in ids)  # each alone passes
     decisions.approve_decision(s, ids[0], "direct_user:owner")
     with pytest.raises(InvariantViolation, match="daily_notional_cap"):
@@ -431,7 +434,7 @@ def test_slippage_sign_follows_the_side_of_the_trade():
         did = decisions.propose_decision(s, "scope_s", "trade", "action",
                                          {"direction": direction, "notional": 5_000, "venue": "venue_a",
                                           "expected_price": 50.0}, "r", subject_id="SUBJ_A", nav=100_000,
-                                         asset_class="equity", position_snapshot_ids=snaps or [])
+                                         asset_class="equity", position_snapshot_ids=snaps or [short_pos])
         decisions.approve_decision(s, did, "direct_user:owner")
         return receipts.get_receipt(s, decisions.record_execution(s, did, "venue:v", {"qty": 100, "px": px})).payload
     assert fill("buy", 50.5)["slippage_bps"] == 100.0       # paid more: cost

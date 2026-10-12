@@ -237,7 +237,7 @@ def add_trigger(store: Store, subject_id: str, name: str, condition: str, trigge
         id=store.new_id("trg"), subject_id=subject_id, name=name, trigger_type=trigger_type,
         condition=condition, state="green", action_type=action_type,
         decision_packet=dict(decision_packet or {}), priority=priority, status="active",
-        last_evaluated_at=None,
+        last_evaluated_at=None, created_at=store.clock(), recorded_at=store.clock(),
     )
     return store.insert(rec)
 
@@ -246,7 +246,20 @@ def set_trigger_state(store: Store, trigger_id: str, state: str) -> None:
     """A trigger calls for review. It does not authorise a trade."""
     if state not in TRIGGER_STATES:
         raise KernelError(f"unknown trigger state {state!r}")
-    store.update("research_trigger", trigger_id, state=state, last_evaluated_at=store.clock())
+    now = store.clock()
+    with store.transaction():
+        store.db.execute("INSERT INTO trigger_state_event (id, trigger_id, state, occurred_at) VALUES (?,?,?,?)",
+                         (store.new_id("tse"), trigger_id, state, now))
+        store.update("research_trigger", trigger_id, state=state, last_evaluated_at=now)
+
+
+def trigger_state_at(store: Store, trigger_id: str, known: Optional[str]) -> str:
+    """The state a trigger had at recording time `known`; current state if None."""
+    if known is None:
+        return store.get("research_trigger", trigger_id).state
+    rows = store.raw("SELECT state FROM trigger_state_event WHERE trigger_id = ? AND occurred_at <= ? "
+                     "ORDER BY rowid DESC LIMIT 1", (trigger_id, known))
+    return rows[0][0] if rows else "green"
 
 
 def active_triggers(store: Store, subject_id: str) -> list[Trigger]:

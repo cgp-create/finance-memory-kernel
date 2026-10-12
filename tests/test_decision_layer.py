@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from conftest import mandate_body
+from conftest import flat_snapshot, mandate_body
 from fmk import decisions, receipts, retrieval
 from fmk.models import InvariantViolation
 
@@ -98,7 +98,8 @@ def test_snapshots_are_append_only(dstore):
 def _propose(store, kind="trade", notional=5_000, nav=100_000, subject="SUBJ_A", rung="action", **proposal):
     prop = {"direction": "buy", "notional": notional, "venue": "venue_a", **proposal}
     return decisions.propose_decision(store, "scope_test", kind, rung, prop, "test rationale",
-                                      subject_id=subject, nav=nav, asset_class="equity")
+                                      subject_id=subject, nav=nav, asset_class="equity",
+                                      position_snapshot_ids=[flat_snapshot(store, "scope_test", subject)])
 
 
 def test_forward_only(dstore):
@@ -220,7 +221,8 @@ def test_daily_notional_cap_and_net_edge(store):
         return decisions.propose_decision(
             store, "scope_d", "trade", "action",
             {"direction": "buy", "notional": notional, "venue": "venue_a", "expected_edge_bps": edge,
-             "estimated_cost_bps": cost}, "r", subject_id="SUBJ_A", nav=1_000_000, asset_class="equity")
+             "estimated_cost_bps": cost}, "r", subject_id="SUBJ_A", nav=1_000_000, asset_class="equity",
+            position_snapshot_ids=[flat_snapshot(store, "scope_d", "SUBJ_A")])
     first = prop(5_000, 60, 15)
     assert decisions.get_decision(store, first).mandate_check["status"] == "pass"
     decisions.approve_decision(store, first, "direct_user:owner")
@@ -325,7 +327,8 @@ def test_execution_records_slippage_and_partial_fills(store):
     did = decisions.propose_decision(store, "scope_e", "trade", "action",
                                      {"direction": "buy", "notional": 5_000, "venue": "venue_a",
                                       "quantity": 100, "expected_price": 50.0}, "r",
-                                     subject_id="SUBJ_A", nav=100_000, asset_class="equity")
+                                     subject_id="SUBJ_A", nav=100_000, asset_class="equity",
+                                     position_snapshot_ids=[flat_snapshot(store, "scope_e", "SUBJ_A")])
     decisions.approve_decision(store, did, "direct_user:owner")
     rid = decisions.record_execution(store, did, "venue:venue_a", {"qty": 60, "px": 50.25})
     p = receipts.get_receipt(store, rid).payload
